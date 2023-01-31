@@ -16,6 +16,8 @@
 
 -export([start_clear/3]).
 -export([start_tls/3]).
+-export([start_quic/1]).
+-export([start_quic_test/0]).
 -export([stop_listener/1]).
 -export([set_env/3]).
 
@@ -60,6 +62,43 @@ start_tls(Ref, TransOpts0, ProtoOpts0) ->
 	{TransOpts, ConnectionType} = ensure_connection_type(TransOpts2),
 	ProtoOpts = ProtoOpts0#{connection_type => ConnectionType},
 	ranch:start_listener(Ref, ranch_ssl, TransOpts, cowboy_tls, ProtoOpts).
+
+%% @todo Experimental function to start a barebone QUIC listener.
+%%       This will need to be reworked to be closer to Ranch
+%%       listeners and provide equivalent features.
+-spec start_quic(_) -> ok.
+start_quic(TransOpts) ->
+	{ok, _} = application:ensure_all_started(quicer),
+	Parent = self(),
+	Port = 4567,
+	SocketOpts0 = maps:get(socket_opts, TransOpts, []),
+	SocketOpts = [
+		{alpn, ["h3"]},
+		{peer_unidi_stream_count, 100}, %% @todo Good default?
+		{peer_bidi_stream_count, 100}
+	|SocketOpts0],
+	{ok, Listen} = quicer:listen(Port, SocketOpts),
+	spawn(fun AcceptLoop() ->
+		{ok, Conn} = quicer:accept(Listen, []),
+		{ok, Conn} = quicer:handshake(Conn),
+		Pid = spawn(fun() ->
+			receive go -> ok end,
+			cowboy_http3:init(Parent, Conn)
+		end),
+		ok = quicer:controlling_process(Conn, Pid),
+		Pid ! go,
+		AcceptLoop()
+	end),
+	ok.
+
+-spec start_quic_test() -> ok.
+start_quic_test() ->
+	start_quic(#{
+		socket_opts => [
+			{cert, "deps/quicer/test/quicer_SUITE_data/cert.pem"},
+			{key, "deps/quicer/test/quicer_SUITE_data/key.pem"}
+		]
+	}).
 
 ensure_connection_type(TransOpts=#{connection_type := ConnectionType}) ->
 	{TransOpts, ConnectionType};
