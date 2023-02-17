@@ -19,18 +19,24 @@
 -include_lib("quicer/include/quicer.hrl").
 
 -record(stream, {
-	id :: non_neg_integer(), %% @todo specs
-	dir :: unidi_local | unidi_remote | bidi,
-	ref :: any(), %% @todo specs
-	role :: undefined | req | control | push | encoder | decoder
+	ref :: any(), %% @todo specs; is it useful in the record?
+
+	%% Whether the stream is currently in a special state.
+	status :: header | normal | data | discard,
+
+	%% Stream buffer.
+	buffer = <<>> :: binary(),
+
+	%% Stream state.
+	state :: {module, any()}
 }).
 
 -record(state, {
 	parent :: pid(),
 	conn :: any(), %% @todo specs
 
-	%% Quick pointers for commonly used streams.
-	local_encoder_stream :: any(), %% @todo specs
+	%% HTTP/3 state machine.
+	http3_machine :: cow_http3_machine:http3_machine(),
 
 	%% Bidirectional streams are used for requests and responses.
 	streams = #{} :: map() %% @todo specs
@@ -38,11 +44,13 @@
 
 -spec init(_, _) -> no_return().
 init(Parent, Conn) ->
+	Opts = #{}, %% @todo
+	{ok, SettingsBin, HTTP3Machine0} = cow_http3_machine:init(server, Opts),
 	{ok, Conn} = quicer:async_accept_stream(Conn, []),
 	%% Immediately open a control, encoder and decoder stream.
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
-	quicer:send(ControlRef, <<0>>), %% @todo Also send settings frame.
+	quicer:send(ControlRef, [<<0>>, SettingsBin]),
 	{ok, ControlID} = quicer:get_stream_id(ControlRef),
 	{ok, EncoderRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -52,19 +60,20 @@ init(Parent, Conn) ->
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
 	quicer:send(DecoderRef, <<3>>),
 	{ok, DecoderID} = quicer:get_stream_id(DecoderRef),
+	%% Set the control, encoder and decoder streams in the machine.
+	HTTP3Machine = cow_http3_machine:init_unidi_local_streams(
+		ControlRef, ControlID, EncoderRef, EncoderID, DecoderRef, DecoderID,
+		HTTP3Machine0),
 	%% Quick! Let's go!
-	loop(#state{parent=Parent, conn=Conn, local_encoder_stream=EncoderRef, streams=#{
-		ControlRef => #stream{id=ControlID, dir=unidi_local, ref=ControlRef, role=control},
-		EncoderRef => #stream{id=EncoderID, dir=unidi_local, ref=EncoderRef, role=encoder},
-		DecoderRef => #stream{id=DecoderID, dir=unidi_local, ref=DecoderRef, role=decoder}
-	}}).
+	loop(#state{parent=Parent, conn=Conn, http3_machine=HTTP3Machine}).
 
 loop(State0=#state{conn=Conn}) ->
 	receive
 		%% Stream data.
+		%% @todo IsFin is inside Props. But it may not be set once the data was sent.
 		{quic, Data, StreamRef, Props} when is_binary(Data) ->
-			State = stream_data(Data, State0, StreamRef, Props),
-			loop(State);
+			logger:error("DATA ~p props ~p", [StreamRef, Props]),
+			parse(State0, Data, StreamRef, Props);
 		%% QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED
 		{quic, new_stream, StreamRef, Flags} ->
 			%% Conn does not change.
@@ -102,68 +111,142 @@ loop(State0=#state{conn=Conn}) ->
 			loop(State0)
 	end.
 
-stream_new_remote(State=#state{streams=Streams}, StreamRef, Flags) ->
-	{ok, StreamID} = quicer:get_stream_id(StreamRef),
-	{StreamDir, Role} = case quicer:is_unidirectional(Flags) of
-		true -> {unidi_remote, undefined};
-		false -> {bidi, req}
-	end,
-	Stream = #stream{id=StreamID, dir=StreamDir, ref=StreamRef, role=Role},
-	logger:debug("new stream ~p", [Stream]),
-	State#state{streams=Streams#{StreamRef => Stream}}.
-
-stream_data(Data, State=#state{streams=Streams}, StreamRef, _Props) ->
+parse(State=#state{streams=Streams}, Data, StreamRef, Props) ->
 	#{StreamRef := Stream} = Streams,
-	stream_data2(Data, State, Stream).
+	case Stream of
+		#stream{buffer= <<>>} ->
+			parse1(State, Data, Stream, Props);
+		#stream{buffer=Buffer} ->
+			parse1(State, <<Buffer/binary, Data/binary>>,
+				Stream#stream{buffer= <<>>}, Props)
+	end.
 
-stream_data2(Data, State, Stream=#stream{role=req}) ->
-	stream_data_req(State, Data, Stream);
-stream_data2(_Data, State, _Stream=#stream{role=control}) ->
-	State; %stream_data_control(...);
-stream_data2(_Data, State, _Stream=#stream{role=encoder}) ->
-	State; %stream_data_encoder(...);
-stream_data2(_Data, State, _Stream=#stream{role=decoder}) ->
-	State; %stream_data_decoder(...);
-stream_data2(Data, State, Stream=#stream{role=undefined, dir=unidi_remote}) ->
-	stream_data_undefined(State, Data, Stream).
+%% @todo Swap Data and Stream/StreamRef.
+parse1(State, Data, Stream=#stream{status=header}, Props) ->
+	parse_unidirectional_stream_header(State, Data, Stream, Props);
+%% @todo Continuation clause for data frames.
+%% @todo Clause that discards receiving data for aborted streams.
+parse1(State, Data, Stream, Props) ->
+	case cow_http3:parse(Data) of
+		{ok, Frame, Rest} ->
+			parse1(frame(State, Stream, Frame, Props), Rest, Stream, Props);
+		{more, Frame, _Len} ->
+			%% @todo Change state of stream to expect more data frames.
+			loop(frame(State, Stream, Frame, Props));
+		{ignore, Rest} ->
+			parse1(ignored_frame(State, Stream), Rest, Stream, Props);
+		Error = {connection_error, _, _} ->
+			terminate(State, Error);
+		more ->
+			loop(stream_update(State, Stream#stream{buffer=Data}))
+	end.
 
-%% @todo Frame type and length are using https://www.rfc-editor.org/rfc/rfc9000.html#name-variable-length-integer-enc
-%% @todo Check stream state and update it afterwards.
-stream_data_req(State=#state{local_encoder_stream=EncoderRef},
-		Req = <<1, _Len, FieldsBin/binary>>, #stream{ref=StreamRef}) ->
-	logger:debug("data ~p~nfields ~p", [Req, cow_qpack:decode_field_section(FieldsBin, 0, cow_qpack:init())]),
-	StreamID = quicer:get_stream_id(StreamRef),
+parse_unidirectional_stream_header(State0=#state{http3_machine=HTTP3Machine0},
+		Data, Stream0=#stream{ref=StreamRef}, Props) ->
+	case cow_http3:parse_unidi_stream_header(Data) of
+		{ok, Type, Rest} when Type =:= control; Type =:= encoder; Type =:= decoder ->
+			HTTP3Machine = cow_http3_machine:set_unidi_remote_stream_type(
+				StreamRef, Type, HTTP3Machine0),
+			State = State0#state{http3_machine=HTTP3Machine},
+			Stream = Stream0#stream{status=normal},
+			parse1(stream_update(State, Stream), Rest, Stream, Props);
+		{ok, push, _} ->
+			terminate(State0, {connection_error, h3_stream_creation_error,
+				'Only servers can push. (RFC9114 6.2.2)'});
+		%% Unknown stream types must be ignored. We choose to abort the
+		%% stream instead of reading and discarding the incoming data.
+		{undefined, _} ->
+			loop(stream_abort_receive(State0, Stream0, h3_stream_creation_error))
+	end.
+
+frame(State=#state{http3_machine=HTTP3Machine0}, Stream=#stream{ref=StreamRef}, Frame, Props) ->
+	#{flags := Flags} = Props,
+	IsFin = case Flags band ?QUIC_RECEIVE_FLAG_FIN of
+		?QUIC_RECEIVE_FLAG_FIN -> fin;
+		_ -> nofin
+	end,
+	case cow_http3_machine:frame(Frame, IsFin, StreamRef, HTTP3Machine0) of
+		{ok, HTTP3Machine} ->
+			State#state{http3_machine=HTTP3Machine};
+		{ok, {headers, IsFin, Headers, PseudoHeaders, BodyLen}, HTTP3Machine} ->
+			headers_frame(State#state{http3_machine=HTTP3Machine},
+				Stream, Headers, PseudoHeaders, BodyLen);
+		{ok, {headers, IsFin, Headers, PseudoHeaders, BodyLen},
+				{DecoderRef, DecData}, HTTP3Machine} ->
+			%% Send the decoder data.
+			quicer:send(DecoderRef, DecData),
+			headers_frame(State#state{http3_machine=HTTP3Machine},
+				Stream, Headers, PseudoHeaders, BodyLen)
+	end.
+
+headers_frame(State, Stream=#stream{ref=StreamRef}, Headers, PseudoHeaders, BodyLen) ->
+	logger:error("~p~n~p~n~p~n~p~n~p", [State, Stream, Headers, PseudoHeaders, BodyLen]),
+	{ok, StreamID} = quicer:get_stream_id(StreamRef),
 	{ok, Data, EncData, _} = cow_qpack:encode_field_section([
 		{<<":status">>, <<"200">>},
 		{<<"content-length">>, <<"12">>},
 		{<<"content-type">>, <<"text/plain">>}
 	], StreamID, cow_qpack:init()),
-	%% Send the encoder data.
-	quicer:send(EncoderRef, EncData),
+%	%% Send the encoder data.
+%	quicer:send(EncoderRef, EncData),
 	%% Then the response data.
 	DataLen = iolist_size(Data),
 	quicer:send(StreamRef, [<<1, DataLen>>, Data]),
 	quicer:send(StreamRef, <<0,12,"Hello world!">>, ?QUIC_SEND_FLAG_FIN),
 %	quicer:shutdown_stream(StreamRef),
-	logger:debug("sent response ~p~nenc data ~p", [iolist_to_binary([<<1, DataLen>>, Data]), EncData]),
+	logger:error("sent response ~p~nenc data ~p", [iolist_to_binary([<<1, DataLen>>, Data]), EncData]),
 	State.
 
-%% @todo stream_control
-%% @todo stream_encoder
-%% @todo stream_decoder
+%% @todo In ignored_frame we must check for example that the frame
+%%       we received wasn't the first frame in a control stream
+%%       as that one must be SETTINGS.
+ignored_frame(State, _) ->
+	State.
 
-%% @todo We should probably reject, not crash, unknown/bad types.
-stream_data_undefined(State, <<TypeBin, Rest/bits>>, Stream0) ->
-	Role = case TypeBin of
-		0 -> control;
-		2 -> encoder;
-		3 -> decoder
+stream_abort_receive(State, Stream=#stream{ref=StreamRef}, Reason) ->
+	quicer:shutdown_stream(StreamRef, ?QUIC_STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE,
+		error_code(Reason), infinity),
+	stream_update(State, Stream#stream{status=discard}).
+
+%% @todo
+terminate(_State, Error) ->
+	exit({shutdown, Error}).
+
+%% @todo qpack errors
+error_code(h3_no_error) -> 16#0100;
+error_code(h3_general_protocol_error) -> 16#0101;
+error_code(h3_internal_error) -> 16#0102;
+error_code(h3_stream_creation_error) -> 16#0103;
+error_code(h3_closed_critical_stream) -> 16#0104;
+error_code(h3_frame_unexpected) -> 16#0105;
+error_code(h3_frame_error) -> 16#0106;
+error_code(h3_excessive_load) -> 16#0107;
+error_code(h3_id_error) -> 16#0108;
+error_code(h3_settings_error) -> 16#0109;
+error_code(h3_missing_settings) -> 16#010a;
+error_code(h3_request_rejected) -> 16#010b;
+error_code(h3_request_cancelled) -> 16#010c;
+error_code(h3_request_incomplete) -> 16#010d;
+error_code(h3_message_error) -> 16#010e;
+error_code(h3_connect_error) -> 16#010f;
+error_code(h3_version_fallback) -> 16#0110.
+
+stream_new_remote(State=#state{http3_machine=HTTP3Machine0, streams=Streams}, StreamRef, Flags) ->
+	{ok, StreamID} = quicer:get_stream_id(StreamRef),
+	{StreamDir, StreamType, Status} = case quicer:is_unidirectional(Flags) of
+		true -> {unidi_remote, undefined, header};
+		false -> {bidi, req, normal}
 	end,
-	Stream = Stream0#stream{role=Role},
-	stream_data2(Rest, stream_update(State, Stream), Stream).
+	HTTP3Machine = cow_http3_machine:init_stream(StreamRef,
+		StreamID, StreamDir, StreamType, HTTP3Machine0),
+	Stream = #stream{ref=StreamRef, status=Status},
+	logger:error("new stream ~p ~p", [Stream, HTTP3Machine]),
+	State#state{http3_machine=HTTP3Machine, streams=Streams#{StreamRef => Stream}}.
 
 stream_closed(State=#state{streams=Streams0}, StreamRef, _Flags) ->
-	{_Stream, Streams} = maps:take(StreamRef, Streams0),
+	%% @todo Some streams may not be bidi or remote. Need to inform cow_http3_machine too.
+	logger:error("stream_closed ~p", [StreamRef]),
+	Streams = maps:remove(StreamRef, Streams0),
 	%% @todo terminate stream
 	State#state{streams=Streams}.
 
