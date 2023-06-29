@@ -19,6 +19,7 @@
 -export([init_stream/5]).
 -export([set_unidi_remote_stream_type/3]).
 -export([frame/4]).
+-export([prepare_headers/5]).
 
 -record(stream, {
 	ref :: any(), %% @todo specs
@@ -319,6 +320,63 @@ headers_frame(Stream0, State0=#http3_machine{local_decoder_ref=DecoderRef},
 		_ ->
 			{ok, {headers, IsFin, Headers, PseudoHeaders, Len}, {DecoderRef, DecData}, State}
 	end.
+
+%% Functions for sending a message header or body. Note that
+%% this module does not send data directly, instead it returns
+%% a value that can then be used to send the frames.
+
+%-spec prepare_headers(cow_http2:streamid(), State, idle | cow_http2:fin(),
+%	pseudo_headers(), cow_http:headers())
+%	-> {ok, cow_http2:fin(), iodata(), State} when State::http2_machine().
+-spec prepare_headers(_, _, _, _, _) -> todo.
+
+prepare_headers(StreamRef, State=#http3_machine{encode_state=EncodeState0},
+		IsFin0, PseudoHeaders, Headers0) ->
+	Stream = #stream{id=StreamID, method=Method, local=idle} = stream_get(StreamRef, State),
+	IsFin = case {IsFin0, Method} of
+		{idle, _} -> nofin;
+		{_, <<"HEAD">>} -> fin;
+		_ -> IsFin0
+	end,
+	Headers = merge_pseudo_headers(PseudoHeaders, remove_http11_headers(Headers0)),
+	{ok, HeaderBlock, EncData, EncodeState} = cow_qpack:encode_field_section(Headers, StreamID, EncodeState0),
+	{ok, IsFin, HeaderBlock, EncData, stream_store(Stream#stream{local=IsFin0},
+		State#http3_machine{encode_state=EncodeState})}.
+
+%% @todo Function copied from cow_http2_machine.
+remove_http11_headers(Headers) ->
+	RemoveHeaders0 = [
+		<<"keep-alive">>,
+		<<"proxy-connection">>,
+		<<"transfer-encoding">>,
+		<<"upgrade">>
+	],
+	RemoveHeaders = case lists:keyfind(<<"connection">>, 1, Headers) of
+		false ->
+			RemoveHeaders0;
+		{_, ConnHd} ->
+			%% We do not need to worry about any "close" header because
+			%% that header name is reserved.
+			Connection = cow_http_hd:parse_connection(ConnHd),
+			Connection ++ [<<"connection">>|RemoveHeaders0]
+	end,
+	lists:filter(fun({Name, _}) ->
+		not lists:member(Name, RemoveHeaders)
+	end, Headers).
+
+%% @todo Function copied from cow_http2_machine.
+merge_pseudo_headers(PseudoHeaders, Headers0) ->
+	lists:foldl(fun
+		({status, Status}, Acc) when is_integer(Status) ->
+			[{<<":status">>, integer_to_binary(Status)}|Acc];
+		({Name, Value}, Acc) ->
+			[{iolist_to_binary([$:, atom_to_binary(Name, latin1)]), Value}|Acc]
+		end, Headers0, maps:to_list(PseudoHeaders)).
+
+%% Stream-related functions.
+
+stream_get(StreamRef, #http3_machine{streams=Streams}) ->
+	maps:get(StreamRef, Streams, undefined).
 
 stream_store(#stream{ref=StreamRef, local=fin, remote=fin},
 		State=#http3_machine{streams=Streams0}) ->

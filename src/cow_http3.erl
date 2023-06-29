@@ -14,8 +14,15 @@
 
 -module(cow_http3).
 
+%% Parsing.
 -export([parse/1]).
 -export([parse_unidi_stream_header/1]).
+
+%% Building.
+-export([data/1]).
+-export([headers/1]).
+
+%% Parsing.
 
 -spec parse(_) -> _. %% @todo
 
@@ -258,3 +265,26 @@ parse_unidi_stream_header(<<2:2, _:30, Rest/bits>>) ->
 	{undefined, Rest};
 parse_unidi_stream_header(<<3:2, _:62, Rest/bits>>) ->
 	{undefined, Rest}.
+
+%% Building.
+
+-spec data(_) -> todo.
+
+data(Data) ->
+	Len = encode_int(iolist_size(Data)),
+	[<<0:8>>, Len, Data].
+
+-spec headers(_) -> todo.
+
+headers(HeaderBlock) ->
+	Len = encode_int(iolist_size(HeaderBlock)),
+	[<<1:8>>, Len, HeaderBlock].
+
+encode_int(I) when I < 64 ->
+	<<0:2, I:6>>;
+encode_int(I) when I < 16384 ->
+	<<1:2, I:14>>;
+encode_int(I) when I < 1073741824 ->
+	<<2:2, I:30>>;
+encode_int(I) when I < 4611686018427387904 ->
+	<<3:2, I:62>>.

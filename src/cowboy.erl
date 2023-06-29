@@ -16,7 +16,7 @@
 
 -export([start_clear/3]).
 -export([start_tls/3]).
--export([start_quic/1]).
+-export([start_quic/2]).
 -export([start_quic_test/0]).
 -export([stop_listener/1]).
 -export([set_env/3]).
@@ -66,8 +66,8 @@ start_tls(Ref, TransOpts0, ProtoOpts0) ->
 %% @todo Experimental function to start a barebone QUIC listener.
 %%       This will need to be reworked to be closer to Ranch
 %%       listeners and provide equivalent features.
--spec start_quic(_) -> ok.
-start_quic(TransOpts) ->
+-spec start_quic(_, _) -> todo.
+start_quic(TransOpts, ProtoOpts) ->
 	{ok, _} = application:ensure_all_started(quicer),
 	Parent = self(),
 	Port = 4567,
@@ -83,7 +83,7 @@ start_quic(TransOpts) ->
 		{ok, Conn} = quicer:handshake(Conn),
 		Pid = spawn(fun() ->
 			receive go -> ok end,
-			cowboy_http3:init(Parent, Conn)
+			cowboy_http3:init(Parent, Conn, ProtoOpts)
 		end),
 		ok = quicer:controlling_process(Conn, Pid),
 		Pid ! go,
@@ -98,6 +98,12 @@ start_quic_test() ->
 			{cert, "deps/quicer/test/quicer_SUITE_data/cert.pem"},
 			{key, "deps/quicer/test/quicer_SUITE_data/key.pem"}
 		]
+	}, #{
+		env => #{dispatch => cowboy_router:compile([
+			{"localhost", [
+				{"/", quic_hello_h, []}
+			]}
+		])}
 	}).
 
 ensure_connection_type(TransOpts=#{connection_type := ConnectionType}) ->
