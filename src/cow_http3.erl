@@ -17,10 +17,13 @@
 %% Parsing.
 -export([parse/1]).
 -export([parse_unidi_stream_header/1]).
+-export([code_to_error/1]).
 
 %% Building.
 -export([data/1]).
 -export([headers/1]).
+-export([error_to_code/1]).
+-export([encode_int/1]).
 
 %% Parsing.
 
@@ -266,6 +269,26 @@ parse_unidi_stream_header(<<2:2, _:30, Rest/bits>>) ->
 parse_unidi_stream_header(<<3:2, _:62, Rest/bits>>) ->
 	{undefined, Rest}.
 
+-spec code_to_error(_) -> todo.
+
+code_to_error(16#0100) -> h3_no_error;
+code_to_error(16#0101) -> h3_general_protocol_error;
+code_to_error(16#0102) -> h3_internal_error;
+code_to_error(16#0103) -> h3_stream_creation_error;
+code_to_error(16#0104) -> h3_closed_critical_stream;
+code_to_error(16#0105) -> h3_frame_unexpected;
+code_to_error(16#0106) -> h3_frame_error;
+code_to_error(16#0107) -> h3_excessive_load;
+code_to_error(16#0108) -> h3_id_error;
+code_to_error(16#0109) -> h3_settings_error;
+code_to_error(16#010a) -> h3_missing_settings;
+code_to_error(16#010b) -> h3_request_rejected;
+code_to_error(16#010c) -> h3_request_cancelled;
+code_to_error(16#010d) -> h3_request_incomplete;
+code_to_error(16#010e) -> h3_message_error;
+code_to_error(16#010f) -> h3_connect_error;
+code_to_error(16#0110) -> h3_version_fallback.
+
 %% Building.
 
 -spec data(_) -> todo.
@@ -279,6 +302,28 @@ data(Data) ->
 headers(HeaderBlock) ->
 	Len = encode_int(iolist_size(HeaderBlock)),
 	[<<1:8>>, Len, HeaderBlock].
+
+-spec error_to_code(_) -> todo.
+
+error_to_code(h3_no_error) -> 16#0100;
+error_to_code(h3_general_protocol_error) -> 16#0101;
+error_to_code(h3_internal_error) -> 16#0102;
+error_to_code(h3_stream_creation_error) -> 16#0103;
+error_to_code(h3_closed_critical_stream) -> 16#0104;
+error_to_code(h3_frame_unexpected) -> 16#0105;
+error_to_code(h3_frame_error) -> 16#0106;
+error_to_code(h3_excessive_load) -> 16#0107;
+error_to_code(h3_id_error) -> 16#0108;
+error_to_code(h3_settings_error) -> 16#0109;
+error_to_code(h3_missing_settings) -> 16#010a;
+error_to_code(h3_request_rejected) -> 16#010b;
+error_to_code(h3_request_cancelled) -> 16#010c;
+error_to_code(h3_request_incomplete) -> 16#010d;
+error_to_code(h3_message_error) -> 16#010e;
+error_to_code(h3_connect_error) -> 16#010f;
+error_to_code(h3_version_fallback) -> 16#0110.
+
+-spec encode_int(_) -> todo.
 
 encode_int(I) when I < 64 ->
 	<<0:2, I:6>>;

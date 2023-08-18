@@ -73,23 +73,28 @@ start_quic(TransOpts, ProtoOpts) ->
 	Port = 4567,
 	SocketOpts0 = maps:get(socket_opts, TransOpts, []),
 	SocketOpts = [
-		{alpn, ["h3"]},
+		{alpn, ["h3"]}, %% @todo Why not binary?
 		{peer_unidi_stream_count, 100}, %% @todo Good default?
 		{peer_bidi_stream_count, 100}
 	|SocketOpts0],
 	{ok, Listen} = quicer:listen(Port, SocketOpts),
-	spawn(fun AcceptLoop() ->
+	ListenerPid = spawn(fun AcceptLoop() ->
 		{ok, Conn} = quicer:accept(Listen, []),
 		{ok, Conn} = quicer:handshake(Conn),
 		Pid = spawn(fun() ->
 			receive go -> ok end,
-			cowboy_http3:init(Parent, Conn, ProtoOpts)
+			process_flag(trap_exit, true), %% @todo Only if supervisor though.
+			try cowboy_http3:init(Parent, Conn, ProtoOpts)
+			catch
+				exit:{shutdown,_} -> ok;
+				C:E:S -> ct:pal("CRASH ~p:~p:~p", [C,E,S])
+			end
 		end),
 		ok = quicer:controlling_process(Conn, Pid),
 		Pid ! go,
 		AcceptLoop()
 	end),
-	ok.
+	{ok, ListenerPid}.
 
 -spec start_quic_test() -> ok.
 start_quic_test() ->

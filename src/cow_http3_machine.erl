@@ -20,6 +20,7 @@
 -export([set_unidi_remote_stream_type/3]).
 -export([frame/4]).
 -export([prepare_headers/5]).
+-export([reset_stream/2]).
 
 -record(stream, {
 	ref :: any(), %% @todo specs
@@ -70,7 +71,7 @@
 -spec init(_, _) -> _. %% @todo
 
 init(Mode, _Opts) ->
-	{ok, <<>>, #http3_machine{mode=Mode}}.
+	{ok, <<4,0>>, #http3_machine{mode=Mode}}.
 
 -spec init_unidi_local_streams(_, _, _, _, _ ,_ ,_) -> _. %% @todo
 
@@ -104,9 +105,64 @@ set_unidi_remote_stream_type(StreamRef, Type,
 
 frame(Frame, IsFin, StreamRef, State) ->
 	case element(1, Frame) of
+		data -> data_frame(Frame, IsFin, StreamRef, State);
 		headers -> headers_frame(Frame, IsFin, StreamRef, State);
 		settings -> {ok, State} %% @todo
 	end.
+
+%% DATA frame.
+
+%data_frame({data, StreamID, _, _}, State=#http2_machine{mode=Mode,
+%		local_streamid=LocalStreamID, remote_streamid=RemoteStreamID})
+%		when (?IS_LOCAL(Mode, StreamID) andalso (StreamID >= LocalStreamID))
+%		orelse ((not ?IS_LOCAL(Mode, StreamID)) andalso (StreamID > RemoteStreamID)) ->
+%	{error, {connection_error, protocol_error,
+%		'DATA frame received on a stream in idle state. (RFC7540 5.1)'},
+%		State};
+data_frame(Frame={data, Data}, IsFin, StreamRef, State) ->
+	DataLen = byte_size(Data),
+	case stream_get(StreamRef, State) of
+		Stream = #stream{remote=nofin} ->
+			data_frame(Frame, IsFin, Stream, State, DataLen);
+		#stream{remote=idle} ->
+			{error, {connection_error, h3_frame_unexpected,
+				'DATA frame received before a HEADERS frame. (RFC9114 4.1)'},
+				State};
+		#stream{remote=fin} ->
+			{error, {connection_error, h3_frame_unexpected,
+				'DATA frame received after trailer HEADERS frame. (RFC9114 4.1)'},
+				State}
+	end.
+
+data_frame(Frame, IsFin, Stream0=#stream{remote_read_size=StreamRead}, State0, DataLen) ->
+	Stream = Stream0#stream{remote=IsFin,
+		remote_read_size=StreamRead + DataLen},
+	State = stream_store(Stream, State0),
+	case is_body_size_valid(Stream) of
+		true ->
+			{ok, Frame, State}%;
+%		false ->
+%			stream_reset(StreamID, State, protocol_error,
+%				'The total size of DATA frames is different than the content-length. (RFC7540 8.1.2.6)')
+	end.
+
+%% It's always valid when no content-length header was specified.
+is_body_size_valid(#stream{remote_expected_size=undefined}) ->
+	true;
+%% We didn't finish reading the body but the size is already larger than expected.
+is_body_size_valid(#stream{remote=nofin, remote_expected_size=Expected,
+		remote_read_size=Read}) when Read > Expected ->
+	false;
+is_body_size_valid(#stream{remote=nofin}) ->
+	true;
+is_body_size_valid(#stream{remote=fin, remote_expected_size=Expected,
+		remote_read_size=Expected}) ->
+	true;
+%% We finished reading the body and the size read is not the one expected.
+is_body_size_valid(_) ->
+	false.
+
+%% HEADERS frame.
 
 headers_frame(Frame, IsFin, StreamRef, State=#http3_machine{mode=Mode}) ->
 	case Mode of
@@ -120,12 +176,13 @@ server_headers_frame(Frame, IsFin, StreamRef, State=#http3_machine{streams=Strea
 		#{StreamRef := Stream=#stream{remote=idle}} ->
 			headers_decode(Frame, IsFin, Stream, State, request);
 		%% Trailers.
-		%% @todo Error out if we didn't get the full body.
-		#{StreamRef := _Stream=#stream{remote=nofin}} ->
-			todo_trailers; %% @todo
+		#{StreamRef := Stream=#stream{remote=nofin}} ->
+			headers_decode(Frame, IsFin, Stream, State, trailers);
 		%% Additional frame received after trailers.
-		#{StreamRef := _Stream=#stream{remote=fin}} ->
-			todo_error %% @todo
+		#{StreamRef := #stream{remote=fin}} ->
+			{error, {connection_error, h3_frame_unexpected,
+				'HEADERS frame received after trailer HEADERS frame. (RFC9114 4.1)'},
+				State}
 	end.
 
 %% @todo Check whether connection_error or stream_error fits better.
@@ -177,6 +234,15 @@ headers_pseudo_headers(Stream, State,%=#http3_machine{local_settings=LocalSettin
 				'A required pseudo-header was not found. (RFC7540 8.1.2.3)');
 		{error, HumanReadable} ->
 			headers_malformed(Stream, State, HumanReadable)
+	end;
+headers_pseudo_headers(Stream, State, IsFin, Type=trailers, DecData, Headers) ->
+	case trailers_contain_pseudo_headers(Headers) of
+		false ->
+			headers_regular_headers(Stream, State, IsFin, Type, DecData, #{}, Headers);
+		true ->
+			{error, {stream_error, h3_message_error,
+				'Trailer header blocks must not contain pseudo-headers. (RFC9114 4.3)'},
+				State}
 	end.
 
 %% @todo This function was copy pasted from cow_http2_machine. Export instead.
@@ -205,8 +271,16 @@ request_pseudo_headers([{<<":", _/bits>>, _}|_], _) ->
 request_pseudo_headers(Headers, PseudoHeaders) ->
 	{ok, PseudoHeaders, Headers}.
 
-headers_malformed(#stream{id=StreamID}, State, HumanReadable) ->
-	{error, {stream_error, StreamID, h3_message_error, HumanReadable}, State}.
+trailers_contain_pseudo_headers([]) ->
+	false;
+trailers_contain_pseudo_headers([{<<":", _/bits>>, _}|_]) ->
+	true;
+trailers_contain_pseudo_headers([_|Tail]) ->
+	trailers_contain_pseudo_headers(Tail).
+
+headers_malformed(#stream{id=_StreamID}, State, HumanReadable) ->
+	%% @todo StreamID?
+	{error, {stream_error, h3_message_error, HumanReadable}, State}.
 
 %% Rejecting invalid regular headers might be a bit too strong for clients.
 headers_regular_headers(Stream=#stream{id=_StreamID},
@@ -218,8 +292,8 @@ headers_regular_headers(Stream=#stream{id=_StreamID},
 %			push_promise_frame(Frame, State, Stream, PseudoHeaders, Headers);
 %		ok when Type =:= response ->
 %			response_expected_size(Frame, State, Type, Stream, PseudoHeaders, Headers);
-%		ok when Type =:= trailers ->
-%			trailers_frame(Frame, State, Stream, Headers);
+		ok when Type =:= trailers ->
+			trailers_frame(Stream, State, DecData, Headers);
 		{error, HumanReadable} when Type =:= request ->
 			headers_malformed(Stream, State, HumanReadable)%;
 %		{error, HumanReadable} ->
@@ -268,7 +342,7 @@ request_expected_size(Stream, State, IsFin, Type, DecData, PseudoHeaders, Header
 			headers_frame(Stream, State, IsFin, Type, DecData, PseudoHeaders, Headers, 0);
 		[] ->
 			headers_frame(Stream, State, IsFin, Type, DecData, PseudoHeaders, Headers, undefined);
-		[<<"0">>] when IsFin =:= fin ->
+		[<<"0">>] ->
 			headers_frame(Stream, State, IsFin, Type, DecData, PseudoHeaders, Headers, 0);
 		[_] when IsFin =:= fin ->
 			headers_malformed(Stream, State,
@@ -321,6 +395,24 @@ headers_frame(Stream0, State0=#http3_machine{local_decoder_ref=DecoderRef},
 			{ok, {headers, IsFin, Headers, PseudoHeaders, Len}, {DecoderRef, DecData}, State}
 	end.
 
+trailers_frame(Stream0, State0=#http3_machine{local_decoder_ref=DecoderRef}, DecData, Headers) ->
+	Stream = Stream0#stream{remote=fin},
+	State = stream_store(Stream, State0),
+	%% @todo Error out if we didn't get the full body.
+%	case is_body_size_valid(Stream) of
+%		true ->
+			case DecData of
+				<<>> ->
+					{ok, {trailers, Headers}, State};
+				_ ->
+					{ok, {trailers, Headers}, {DecoderRef, DecData}, State}
+			end.%;
+%		false ->
+%			stream_reset(StreamID, State, protocol_error,
+%				'The total size of DATA frames is different than the content-length. (RFC7540 8.1.2.6)')
+%	end.
+
+
 %% Functions for sending a message header or body. Note that
 %% this module does not send data directly, instead it returns
 %% a value that can then be used to send the frames.
@@ -372,6 +464,18 @@ merge_pseudo_headers(PseudoHeaders, Headers0) ->
 		({Name, Value}, Acc) ->
 			[{iolist_to_binary([$:, atom_to_binary(Name, latin1)]), Value}|Acc]
 		end, Headers0, maps:to_list(PseudoHeaders)).
+
+%% Public interface to reset streams.
+
+-spec reset_stream(_, _) -> todo.
+
+reset_stream(StreamRef, State=#http3_machine{streams=Streams0}) ->
+	case maps:take(StreamRef, Streams0) of
+		{_, Streams} ->
+			{ok, State#http3_machine{streams=Streams}};
+		error ->
+			{error, not_found}
+	end.
 
 %% Stream-related functions.
 

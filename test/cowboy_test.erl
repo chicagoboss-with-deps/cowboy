@@ -37,6 +37,22 @@ init_http2(Ref, ProtoOpts, Config) ->
 	Port = ranch:get_port(Ref),
 	[{ref, Ref}, {type, ssl}, {protocol, http2}, {port, Port}, {opts, Opts}|Config].
 
+%% @todo This will probably require TransOpts as argument.
+init_http3(Ref, ProtoOpts, Config) ->
+	Port = 4567,
+	%% @todo Quicer does not currently support non-file cert/key,
+	%%       so we use quicer test certificates for now.
+	%% @todo Quicer also does not support cacerts which means
+	%%       we currently have no authentication based security.
+	TransOpts = #{
+		socket_opts => [
+			{cert, config(data_dir, Config) ++ "server.pem"},
+			{key, config(data_dir, Config) ++ "server.key"}
+		]
+	},
+	{ok, _} = cowboy:start_quic(TransOpts, ProtoOpts), %% @todo Ref argument.
+	[{ref, Ref}, {type, quic}, {protocol, http3}, {port, Port}, {opts, TransOpts}|Config].
+
 %% Common group of listeners used by most suites.
 
 common_all() ->

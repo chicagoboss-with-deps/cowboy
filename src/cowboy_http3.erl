@@ -30,7 +30,7 @@
 	ref :: any(), %% @todo specs
 
 	%% Whether the stream is currently in a special state.
-	status :: header | normal | data | discard,
+	status :: header | normal | data | discard, %% @todo What's 'data'?
 
 	%% Stream buffer.
 	buffer = <<>> :: binary(),
@@ -55,6 +55,11 @@
 
 	%% Bidirectional streams are used for requests and responses.
 	streams = #{} :: map(), %% @todo specs
+
+	%% Lingering streams that were recently reset. We may receive
+	%% pending data or messages for these streams a short while
+	%% after they have been reset.
+	lingering_streams = [] :: [reference()],
 
 	%% Streams can spawn zero or more children which are then managed
 	%% by this module if operating as a supervisor.
@@ -104,16 +109,18 @@ loop(State0=#state{conn=Conn}) ->
 		%% Stream data.
 		%% @todo IsFin is inside Props. But it may not be set once the data was sent.
 		{quic, Data, StreamRef, Props} when is_binary(Data) ->
-			logger:error("DATA ~p props ~p", [StreamRef, Props]),
+%			ct:pal("DATA ~p props ~p", [StreamRef, Props]),
 			parse(State0, Data, StreamRef, Props);
 		%% QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED
-		{quic, new_stream, StreamRef, Flags} ->
+		{quic, new_stream, StreamRef, #{flags := Flags}} ->
+%			ct:pal("new_stream ~p flags ~p", [StreamRef, Flags]),
 			%% Conn does not change.
 			{ok, Conn} = quicer:async_accept_stream(Conn, []),
 			State = stream_new_remote(State0, StreamRef, Flags),
 			loop(State);
 		%% QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE
 		{quic, stream_closed, StreamRef, Flags} ->
+%			ct:pal("stream_closed ~p flags ~p", [StreamRef, Flags]),
 			State = stream_closed(State0, StreamRef, Flags),
 			loop(State);
 		%% QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE
@@ -134,6 +141,7 @@ loop(State0=#state{conn=Conn}) ->
 			loop(State0);
 		%% QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN
 		{quic, peer_send_shutdown, _StreamRef, undefined} ->
+%			ct:pal("peer_send_shutdown ~p", [StreamRef]),
 			loop(State0);
 		%% QUIC_STREAM_EVENT_SEND_SHUTDOWN_COMPLETE
 		{quic, send_shutdown_complete, _StreamRef, _IsGraceful} ->
@@ -141,22 +149,33 @@ loop(State0=#state{conn=Conn}) ->
 		%% Messages pertaining to a stream.
 		{{Pid, StreamRef}, Msg} when Pid =:= self() ->
 			loop(info(State0, StreamRef, Msg));
-		Msg ->
-			logger:error("msg ~p", [Msg]),
+		_Msg ->
+%			ct:pal("msg ~p", [Msg]),
 			loop(State0)
 	end.
 
-parse(State=#state{streams=Streams}, Data, StreamRef, Props) ->
-	#{StreamRef := Stream} = Streams,
-	case Stream of
-		#stream{buffer= <<>>} ->
+parse(State=#state{streams=Streams, opts=Opts}, Data, StreamRef, Props) ->
+	case Streams of
+		#{StreamRef := Stream=#stream{buffer= <<>>}} ->
 			parse1(State, Data, Stream, Props);
-		#stream{buffer=Buffer} ->
+		#{StreamRef := Stream=#stream{buffer=Buffer}} ->
 			%% @todo OK we should only keep the StreamRef forward
 			%%       and update the stream in the state here.
 			Stream1 = Stream#stream{buffer= <<>>},
 			parse1(stream_update(State, Stream1),
-				<<Buffer/binary, Data/binary>>, Stream1, Props)
+				<<Buffer/binary, Data/binary>>, Stream1, Props);
+		%% Pending data for a stream that has been reset. Ignore.
+		%% @todo Maybe keep a few pending to ignore this and stream process messages.
+		#{} ->
+			case is_lingering_stream(State, StreamRef) of
+				true ->
+					ok;
+				false ->
+					%% We avoid logging the data as it could be quite large.
+					cowboy:log(warning, "Received data for unknown stream ~p.",
+						[StreamRef], Opts)
+			end,
+			loop(State)
 	end.
 
 %% @todo Swap Data and Stream/StreamRef.
@@ -167,16 +186,27 @@ parse1(State, Data, Stream=#stream{status=header}, Props) ->
 parse1(State, Data, Stream=#stream{ref=StreamRef}, Props) ->
 	case cow_http3:parse(Data) of
 		{ok, Frame, Rest} ->
-			parse(frame(State, Stream, Frame, Props), Rest, StreamRef, Props);
+			IsFin = is_fin(Props, Rest),
+			parse(frame(State, Stream, Frame, IsFin), Rest, StreamRef, Props);
 		{more, Frame, _Len} ->
 			%% @todo Change state of stream to expect more data frames.
-			loop(frame(State, Stream, Frame, Props));
+			loop(frame(State, Stream, Frame, nofin));
 		{ignore, Rest} ->
-			parse(ignored_frame(State, Stream), Rest, Stream, Props);
+			parse(ignored_frame(State, Stream), Rest, StreamRef, Props);
 		Error = {connection_error, _, _} ->
 			terminate(State, Error);
 		more ->
 			loop(stream_update(State, Stream#stream{buffer=Data}))
+	end.
+
+%% We may receive multiple frames in a single QUIC packet.
+%% The FIN flag applies to the QUIC packet, not to the frame.
+%% We must therefore only consider the frame to have a FIN
+%% flag if there's no data remaining to be read.
+is_fin(#{flags := Flags}, Rest) ->
+	case Flags band ?QUIC_RECEIVE_FLAG_FIN of
+		?QUIC_RECEIVE_FLAG_FIN when Rest =:= <<>> -> fin;
+		_ -> nofin
 	end.
 
 parse_unidirectional_stream_header(State0=#state{http3_machine=HTTP3Machine0},
@@ -197,15 +227,12 @@ parse_unidirectional_stream_header(State0=#state{http3_machine=HTTP3Machine0},
 			loop(stream_abort_receive(State0, Stream0, h3_stream_creation_error))
 	end.
 
-frame(State=#state{http3_machine=HTTP3Machine0}, Stream=#stream{ref=StreamRef}, Frame, Props) ->
-	#{flags := Flags} = Props,
-	IsFin = case Flags band ?QUIC_RECEIVE_FLAG_FIN of
-		?QUIC_RECEIVE_FLAG_FIN -> fin;
-		_ -> nofin
-	end,
+frame(State=#state{http3_machine=HTTP3Machine0}, Stream=#stream{ref=StreamRef}, Frame, IsFin) ->
 	case cow_http3_machine:frame(Frame, IsFin, StreamRef, HTTP3Machine0) of
 		{ok, HTTP3Machine} ->
 			State#state{http3_machine=HTTP3Machine};
+		{ok, {data, Data}, HTTP3Machine} ->
+			data_frame(State#state{http3_machine=HTTP3Machine}, Stream, IsFin, Data);
 		{ok, {headers, IsFin, Headers, PseudoHeaders, BodyLen}, HTTP3Machine} ->
 			headers_frame(State#state{http3_machine=HTTP3Machine},
 				Stream, IsFin, Headers, PseudoHeaders, BodyLen);
@@ -214,12 +241,42 @@ frame(State=#state{http3_machine=HTTP3Machine0}, Stream=#stream{ref=StreamRef}, 
 			%% Send the decoder data.
 			{ok, _} = quicer:send(DecoderRef, DecData),
 			headers_frame(State#state{http3_machine=HTTP3Machine},
-				Stream, IsFin, Headers, PseudoHeaders, BodyLen)
+				Stream, IsFin, Headers, PseudoHeaders, BodyLen);
+		{ok, {trailers, _Trailers}, HTTP3Machine} ->
+			%% @todo Propagate trailers.
+			State#state{http3_machine=HTTP3Machine};
+		{error, Error={stream_error, _Reason, _Human}, HTTP3Machine} ->
+			reset_stream(State#state{http3_machine=HTTP3Machine}, StreamRef, Error);
+		{error, Error={connection_error, _, _}, HTTP3Machine} ->
+			terminate(State#state{http3_machine=HTTP3Machine}, Error)
 	end.
 
-%% @todo CONNECT, TRACE and possibly HTTP/1.1 conversion like HTTP/2 has.
+data_frame(State=#state{opts=Opts, streams=Streams},
+		Stream=#stream{ref=StreamRef, state=StreamState0}, IsFin, Data) ->
+	try cowboy_stream:data(StreamRef, IsFin, Data, StreamState0) of
+		{Commands, StreamState} ->
+			commands(State#state{
+				streams=Streams#{StreamRef => Stream#stream{state=StreamState}}},
+				StreamRef, Commands)
+	catch Class:Exception:Stacktrace ->
+		cowboy:log(cowboy_stream:make_error_log(data,
+			[StreamRef, IsFin, Data, StreamState0],
+			Class, Exception, Stacktrace), Opts),
+		reset_stream(State, StreamRef, {internal_error, {Class, Exception},
+			'Unhandled exception in cowboy_stream:data/4.'})
+	end.
+
+%% @todo CONNECT, TRACE.
 headers_frame(State, Stream, IsFin, Headers, PseudoHeaders=#{authority := Authority}, BodyLen) ->
-	headers_frame_parse_host(State, Stream, IsFin, Headers, PseudoHeaders, BodyLen, Authority).
+	headers_frame_parse_host(State, Stream, IsFin, Headers, PseudoHeaders, BodyLen, Authority);
+headers_frame(State, Stream=#stream{ref=StreamRef}, IsFin, Headers, PseudoHeaders, BodyLen) ->
+	case lists:keyfind(<<"host">>, 1, Headers) of
+		{_, Authority} ->
+			headers_frame_parse_host(State, Stream, IsFin, Headers, PseudoHeaders, BodyLen, Authority);
+		_ ->
+			reset_stream(State, StreamRef, {stream_error, h3_message_error,
+				'Requests translated from HTTP/1.1 must include a host header. (RFC7540 8.1.2.3, RFC7230 5.4)'})
+	end.
 
 headers_frame_parse_host(State=#state{peer=Peer, sock=Sock},
 		Stream=#stream{ref=StreamRef}, IsFin, Headers,
@@ -230,7 +287,7 @@ headers_frame_parse_host(State=#state{peer=Peer, sock=Sock},
 			Port = ensure_port(Scheme, Port0),
 			try cow_http:parse_fullpath(PathWithQs) of
 				{<<>>, _} ->
-					reset_stream(State, Stream, {stream_error, protocol_error,
+					reset_stream(State, StreamRef, {stream_error, h3_message_error,
 						'The path component must not be empty. (RFC7540 8.1.2.3)'});
 				{Path, Qs} ->
 					Req = #{
@@ -258,11 +315,11 @@ headers_frame_parse_host(State=#state{peer=Peer, sock=Sock},
 %					end,
 					headers_frame(State, Stream, Req)
 			catch _:_ ->
-				reset_stream(State, Stream, {stream_error, protocol_error,
+				reset_stream(State, StreamRef, {stream_error, h3_message_error,
 					'The :path pseudo-header is invalid. (RFC7540 8.1.2.3)'})
 			end
 	catch _:_ ->
-		reset_stream(State, Stream, {stream_error, protocol_error,
+		reset_stream(State, StreamRef, {stream_error, h3_message_error,
 			'The :authority pseudo-header is invalid. (RFC7540 8.1.2.3)'})
 	end.
 
@@ -323,13 +380,13 @@ logger:error("~p ~p", [StreamRef, Streams]),
 					'Unhandled exception in cowboy_stream:info/3.'})
 			end;
 		_ ->
-%			case cow_http2_machine:is_lingering_stream(StreamID, HTTP2Machine) of
-%				true ->
-%					ok;
-%				false ->
+			case is_lingering_stream(State, StreamRef) of
+				true ->
+					ok;
+				false ->
 					cowboy:log(warning, "Received message ~p for unknown stream ~p.",
-						[Msg, StreamRef], Opts),
-%			end,
+						[Msg, StreamRef], Opts)
+			end,
 			State
 	end.
 
@@ -490,8 +547,51 @@ headers_to_list(Headers) ->
 send_flag(nofin) -> ?QUIC_SEND_FLAG_NONE;
 send_flag(fin) -> ?QUIC_SEND_FLAG_FIN.
 
-reset_stream(_, _, _) ->
-	todo.
+reset_stream(State0=#state{http3_machine=HTTP3Machine0}, StreamRef, Error) ->
+	Reason = case Error of
+		{internal_error, _, _} -> h3_internal_error;
+		{stream_error, Reason0, _} -> Reason0
+	end,
+	%% @todo Do we want to close both sides?
+	%% @todo Should we close the send side if the receive side was already closed?
+	quicer:shutdown_stream(StreamRef, ?QUIC_STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE,
+		cow_http3:error_to_code(Reason), infinity),
+	State1 = case cow_http3_machine:reset_stream(StreamRef, HTTP3Machine0) of
+		{ok, HTTP3Machine} ->
+			terminate_stream(State0#state{http3_machine=HTTP3Machine}, StreamRef, Error);
+		{error, not_found} ->
+			terminate_stream(State0, StreamRef, Error)
+	end,
+%% @todo
+%	case reset_rate(State1) of
+%		{ok, State} ->
+%			State;
+%		error ->
+%			terminate(State1, {connection_error, enhance_your_calm,
+%				'Stream reset rate larger than configuration allows. Flood? (CVE-2019-9514)'})
+%	end.
+	State1.
+
+terminate_stream(State=#state{streams=Streams0, children=Children0}, StreamRef, Reason) ->
+	case maps:take(StreamRef, Streams0) of
+		{#stream{state=StreamState}, Streams} ->
+			terminate_stream_handler(State, StreamRef, Reason, StreamState),
+			Children = cowboy_children:shutdown(Children0, StreamRef),
+			stream_linger(State#state{streams=Streams, children=Children}, StreamRef);
+		error ->
+			State
+	end.
+
+terminate_stream_handler(#state{opts=Opts}, StreamRef, Reason, StreamState) ->
+	try
+		cowboy_stream:terminate(StreamRef, Reason, StreamState)
+	catch Class:Exception:Stacktrace ->
+		cowboy:log(cowboy_stream:make_error_log(terminate,
+			[StreamRef, Reason, StreamState],
+			Class, Exception, Stacktrace), Opts)
+	end.
+
+
 
 stop_stream(_, _) ->
 	todo.
@@ -510,9 +610,40 @@ stream_abort_receive(State, Stream=#stream{ref=StreamRef}, Reason) ->
 		error_code(Reason), infinity),
 	stream_update(State, Stream#stream{status=discard}).
 
+terminate(State=#state{conn=Conn, %http3_status=Status,
+		%http3_machine=HTTP3Machine,
+		streams=Streams, children=Children}, Reason) ->
+%	if
+%		Status =:= connected; Status =:= closing_initiated ->
 %% @todo
-terminate(_State, Error) ->
-	exit({shutdown, Error}).
+%			{ok, _} = quicer:send(ControlRef, cow_http3:goaway(
+%				cow_http3_machine:get_last_streamid(HTTP3Machine))),
+		%% We already sent the GOAWAY frame.
+%		Status =:= closing ->
+%			ok
+%	end,
+	terminate_all_streams(State, maps:to_list(Streams), Reason),
+	cowboy_children:terminate(Children),
+%	terminate_linger(State),
+	quicer:shutdown_connection(Conn,
+		?QUIC_CONNECTION_SHUTDOWN_FLAG_NONE,
+		cow_http3:error_to_code(terminate_reason(Reason))),
+	exit({shutdown, Reason}).
+
+terminate_reason({connection_error, Reason, _}) -> Reason.
+%terminate_reason({stop, _, _}) -> no_error;
+%terminate_reason({socket_error, _, _}) -> internal_error;
+%terminate_reason({internal_error, _, _}) -> internal_error.
+
+
+terminate_all_streams(_, [], _) ->
+	ok;
+terminate_all_streams(State, [{StreamID, #stream{state=StreamState}}|Tail], Reason) ->
+	terminate_stream_handler(State, StreamID, Reason, StreamState),
+	terminate_all_streams(State, Tail, Reason).
+
+
+
 
 %% @todo qpack errors
 error_code(h3_no_error) -> 16#0100;
@@ -542,7 +673,7 @@ stream_new_remote(State=#state{http3_machine=HTTP3Machine0, streams=Streams}, St
 	HTTP3Machine = cow_http3_machine:init_stream(StreamRef,
 		StreamID, StreamDir, StreamType, HTTP3Machine0),
 	Stream = #stream{ref=StreamRef, status=Status},
-	logger:error("new stream ~p ~p", [Stream, HTTP3Machine]),
+%	ct:pal("new stream ~p ~p", [Stream, HTTP3Machine]),
 	State#state{http3_machine=HTTP3Machine, streams=Streams#{StreamRef => Stream}}.
 
 stream_closed(State=#state{streams=Streams0}, StreamRef, _Flags) ->
@@ -554,3 +685,11 @@ stream_closed(State=#state{streams=Streams0}, StreamRef, _Flags) ->
 
 stream_update(State=#state{streams=Streams}, Stream=#stream{ref=StreamRef}) ->
 	State#state{streams=Streams#{StreamRef => Stream}}.
+
+stream_linger(State=#state{lingering_streams=Lingering0}, StreamRef) ->
+	%% We only keep up to 100 streams in this state. @todo Make it configurable?
+	Lingering = [StreamRef|lists:sublist(Lingering0, 100 - 1)],
+	State#state{lingering_streams=Lingering}.
+
+is_lingering_stream(#state{lingering_streams=Lingering}, StreamRef) ->
+	lists:member(StreamRef, Lingering).
