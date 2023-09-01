@@ -895,7 +895,7 @@ reject_transfer_encoding_header(Config) ->
 
 reject_upgrade_header(Config) ->
 	doc("Requests containing an upgrade header must be rejected "
-		"with an H3_MESSAGE_ERROR stream error. (RFC9114 4.2, RFC9114 4.1.2)"),
+		"with an H3_MESSAGE_ERROR stream error. (RFC9114 4.2, RFC9114 4.5, RFC9114 4.1.2)"),
 	do_reject_malformed_header(Config,
 		{<<"upgrade">>, <<"websocket">>}
 	).
@@ -1096,25 +1096,28 @@ reject_missing_pseudo_header_authority(Config) ->
 		{<<":path">>, <<"/">>}
 	]).
 
-%% @todo
-%accept_host_header_on_missing_pseudo_header_authority(Config) ->
-%	doc("A request without an authority but with a host header must be accepted. "
-%		"(RFC7540 8.1.2.3, RFC7540 8.1.3)"),
-%	{ok, Socket} = do_handshake(Config),
-%	%% Send a HEADERS frame with host header and without an :authority pseudo-header.
-%	{HeadersBlock, _} = cow_hpack:encode([
-%		{<<":method">>, <<"GET">>},
-%		{<<":scheme">>, <<"http">>},
-%		{<<":path">>, <<"/">>},
-%		{<<"host">>, <<"localhost">>}
-%	]),
-%	ok = gen_tcp:send(Socket, cow_http2:headers(1, fin, HeadersBlock)),
-%	%% Receive a 200 response.
-%	{ok, << Len:24, 1:8, _:8, _:32 >>} = gen_tcp:recv(Socket, 9, 6000),
-%	{ok, RespHeadersBlock} = gen_tcp:recv(Socket, Len, 6000),
-%	{RespHeaders, _} = cow_hpack:decode(RespHeadersBlock),
-%	{_, <<"200">>} = lists:keyfind(<<":status">>, 1, RespHeaders),
-%	ok.
+accept_host_header_on_missing_pseudo_header_authority(Config) ->
+	doc("A request without an authority but with a host header must be accepted. "
+		"(RFC9114 4.3.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
+	{ok, EncodedHeaders, _EncData1, _EncSt0} = cow_qpack:encode_field_section([
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":path">>, <<"/">>},
+		{<<"host">>, <<"localhost">>}
+	], 0, cow_qpack:init()),
+	{ok, _} = quicer:send(StreamRef, [
+		<<1>>, %% HEADERS frame.
+		cow_http3:encode_int(iolist_size(EncodedHeaders)),
+		EncodedHeaders
+	]),
+%	ok = do_async_stream_shutdown(StreamRef),
+	#{
+		headers := #{<<":status">> := <<"200">>},
+		body := <<"Hello world!">>
+	} = do_receive_response(StreamRef),
+	ok.
 
 %% @todo
 %% If the :scheme pseudo-header field identifies a scheme that has a mandatory
@@ -1154,19 +1157,6 @@ reject_many_pseudo_header_path(Config) ->
 		{<<":path">>, <<"/">>}
 	]).
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 do_reject_malformed_header(Config, Header) ->
 	do_reject_malformed_headers(Config, [
 		{<<":method">>, <<"GET">>},
@@ -1190,6 +1180,119 @@ do_reject_malformed_headers(Config, Headers) ->
 	#{reason := h3_message_error} = do_wait_stream_aborted(StreamRef),
 	ok.
 
+%% For responses, a single ":status" pseudo-header field is defined that
+%% carries the HTTP status code; see Section 15 of [HTTP]. This pseudo-header
+%% field MUST be included in all responses; otherwise, the response is malformed
+%% (see Section 4.1.2).
+
+%% @todo Implement CONNECT. (RFC9114 4.4. The CONNECT Method)
+
+%% @todo Maybe block the sending of 101 responses? (RFC9114 4.5. HTTP Upgrade) - also HTTP/2.
+
+%% @todo Implement server push (RFC9114 4.6. Server Push)
+
+%% @todo 5.2 Connection Shutdown - need a way to list connections.
+%% @todo 5.3. Immediate Application Closure
+
+bidi_allow_at_least_a_hundred(Config) ->
+	doc("Endpoints must allow the peer to create at least "
+		"one hundred bidirectional streams. (RFC9114 6.1"),
+	#{conn := Conn} = do_connect(Config),
+	receive
+		{quic, streams_available, Conn, #{bidi_streams := NumStreams}} ->
+			true = NumStreams >= 100,
+			ok
+	after 5000 ->
+		error(timeout)
+	end.
+
+unidi_allow_at_least_three(Config) ->
+	doc("Endpoints must allow the peer to create at least "
+		"three unidirectional streams. (RFC9114 6.2"),
+	#{conn := Conn} = do_connect(Config),
+	%% Confirm that the server advertised support for at least 3 unidi streams.
+	receive
+		{quic, streams_available, Conn, #{unidi_streams := NumStreams}} ->
+			true = NumStreams >= 3,
+			ok
+	after 5000 ->
+		error(timeout)
+	end,
+	%% Confirm that we can create the unidi streams.
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(server, #{}),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(ControlRef, [<<0>>, SettingsBin]),
+	{ok, EncoderRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(EncoderRef, <<2>>),
+	{ok, DecoderRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(DecoderRef, <<3>>),
+	%% Streams shouldn't get closed.
+	receive
+		Msg ->
+			error(Msg)
+	after 1000 ->
+		ok
+	end.
+
+unidi_create_critical_first(Config) ->
+	doc("Endpoints should create the HTTP control stream as well as "
+		"the QPACK encoder and decoder streams first. (RFC9114 6.2"),
+	%% The control stream is accepted in the do_connect/1 function.
+	#{conn := Conn} = do_connect(Config, #{peer_unidi_stream_count => 3}),
+	Unidi1 = do_accept_qpack_stream(Conn),
+	Unidi2 = do_accept_qpack_stream(Conn),
+	case {Unidi1, Unidi2} of
+		{{encoder, _}, {decoder, _}} ->
+			ok;
+		{{decoder, _}, {encoder, _}} ->
+			ok
+	end.
+
+do_accept_qpack_stream(Conn) ->
+	receive
+		{quic, new_stream, StreamRef, #{flags := Flags}} ->
+			ok = quicer:setopt(StreamRef, active, true),
+			true = quicer:is_unidirectional(Flags),
+			receive {quic, <<Type>>, StreamRef, _} ->
+				{case Type of
+					2 -> encoder;
+					3 -> decoder
+				end, StreamRef}
+			after 5000 ->
+				error(timeout)
+			end
+	after 5000 ->
+		error(timeout)
+	end.
+
+%% @todo We should also confirm that there's at least 1,024 bytes of
+%%       flow-control credit for each unidi stream the server creates. (How?)
+%%       It can be set via stream_recv_window_default in quicer.
+
+%% Recipients of unknown stream types MUST either abort reading of the stream
+%% or discard incoming data without further processing. If reading is aborted,
+%% the recipient SHOULD use the H3_STREAM_CREATION_ERROR error code or a reserved
+%% error code (Section 8.1). The recipient MUST NOT consider unknown stream types
+%% to be a connection error of any kind.
+%% @todo Cowboy limits the number of unidi streams to 3. But trying to create
+%%       more streams doesn't seem to generate an error from QUIC, it swallows it.
+
+%% As certain stream types can affect connection state, a recipient SHOULD NOT
+%% discard data from incoming unidirectional streams prior to reading the stream type.
+
+%% Implementations MAY send stream types before knowing whether the peer
+%supports them. However, stream types that could modify the state or semantics
+%of existing protocol components, including QPACK or other extensions, MUST NOT
+%be sent until the peer is known to support them.
+%% @todo It may make sense for Cowboy to delay the creation of unidi streams
+%%       a little in order to save resources. We could create them when the
+%%       client does as well, or something similar.
+
+%% A receiver MUST tolerate unidirectional streams being closed or reset prior
+%% to the reception of the unidirectional stream header.
 
 
 
@@ -1200,6 +1303,121 @@ do_reject_malformed_headers(Config, Headers) ->
 
 
 
+
+
+
+
+
+%% A control stream is indicated by a stream type of 0x00. Data on this stream
+%% consists of HTTP/3 frames, as defined in Section 7.2.
+
+%% Each side MUST initiate a single control stream at the beginning of the
+%% connection and send its SETTINGS frame as the first frame on this stream.
+%% @todo What to do when the client never opens a control stream?
+%% @todo Similarly, a stream could be opened but with no data being sent.
+%% @todo Similarly, a control stream could be opened with no SETTINGS frame sent.
+
+
+
+
+
+%% If
+%% the first frame of the control stream is any other frame type, this MUST be
+%% treated as a connection error of type H3_MISSING_SETTINGS.
+
+control_reject_first_frame_data(Config) ->
+	doc("The first frame on a control stream "
+		"must be a SETTINGS frame. (RFC9114 6.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(ControlRef, [<<0>>, <<0, 12, "Hello world!">>]),
+	%% The connection should have been closed.
+	#{reason := h3_missing_settings} = do_wait_connection_closed(Conn),
+	ok.
+
+%% @todo
+%control_reject_first_frame_headers(Config) ->
+%control_reject_first_frame_cancel_push(Config) ->
+%control_reject_first_frame_push_promise(Config) ->
+%control_accept_first_frame_settings(Config) ->
+%control_reject_first_frame_goaway(Config) ->
+%control_reject_first_frame_max_push_id(Config) ->
+%control_reject_first_frame_reserved(Config) ->
+
+
+
+
+
+control_reject_multiple(Config) ->
+	doc("Endpoints must not create multiple control streams. (RFC9114 6.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	%% Create two control streams.
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(server, #{}),
+	{ok, ControlRef1} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(ControlRef1, [<<0>>, SettingsBin]),
+	{ok, ControlRef2} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(ControlRef2, [<<0>>, SettingsBin]),
+	%% The connection should have been closed.
+	#{reason := h3_stream_creation_error} = do_wait_connection_closed(Conn),
+	ok.
+
+control_local_closed_abort(Config) ->
+	doc("Endpoints must not close the control stream. (RFC9114 6.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(server, #{}),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(ControlRef, [<<0>>, SettingsBin]),
+	%% Wait a little to make sure the stream data was received before we abort.
+	timer:sleep(100),
+	%% Close the control stream.
+	quicer:async_shutdown_stream(ControlRef, ?QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0),
+	%% The connection should have been closed.
+	#{reason := h3_closed_critical_stream} = do_wait_connection_closed(Conn),
+	ok.
+
+control_local_closed_graceful(Config) ->
+	doc("Endpoints must not close the control stream. (RFC9114 6.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(server, #{}),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(ControlRef, [<<0>>, SettingsBin]),
+	%% Close the control stream.
+	quicer:async_shutdown_stream(ControlRef, ?QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, 0),
+	%% The connection should have been closed.
+	#{reason := h3_closed_critical_stream} = do_wait_connection_closed(Conn),
+	ok.
+
+control_remote_closed_abort(Config) ->
+	doc("Endpoints must not close the control stream. (RFC9114 6.2.1)"),
+	#{conn := Conn, control := ControlRef} = do_connect(Config),
+	%% Close the control stream.
+	quicer:async_shutdown_stream(ControlRef, ?QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0),
+	%% The connection should have been closed.
+	#{reason := h3_closed_critical_stream} = do_wait_connection_closed(Conn),
+	ok.
+
+%% We cannot gracefully shutdown a remote unidi stream; only abort reading.
+
+
+
+
+
+
+%% Because the contents of the control stream are used to manage the behavior
+%of other streams, endpoints SHOULD provide enough flow-control credit to keep
+%the peer's control stream from becoming blocked.
+
+%% 2 control streams => error
+%% no stream type sent (= no control stream)
+%% no settings frame sent
+%% another frame sent instead of settings
+%% close control stream
+%% flow control?
 
 
 
@@ -1218,20 +1436,23 @@ do_reject_malformed_headers(Config, Headers) ->
 %% Helper functions.
 
 do_connect(Config) ->
+	do_connect(Config, #{}).
+
+do_connect(Config, Opts) ->
 	{ok, Conn} = quicer:connect("localhost", config(port, Config),
-		#{alpn => ["h3"], verify => none}, 5000),
+		Opts#{alpn => ["h3"], verify => none}, 5000),
 	%% To make sure the connection is fully established we wait
 	%% to receive the SETTINGS frame on the control stream.
 	{ok, ControlRef, _Settings} = do_wait_settings(Conn),
 	#{
 		conn => Conn,
-		control => ControlRef
+		control => ControlRef %% This is the peer control stream.
 	}.
 
 do_wait_settings(Conn) ->
-	{ok, Conn} = quicer:async_accept_stream(Conn, []),
 	receive
 		{quic, new_stream, StreamRef, #{flags := Flags}} ->
+			ok = quicer:setopt(StreamRef, active, true),
 			true = quicer:is_unidirectional(Flags),
 			receive {quic, <<
 				0, %% Control stream.
@@ -1325,7 +1546,7 @@ do_receive_response(StreamRef) ->
 	>> = Rest,
 	BodyLen = integer_to_binary(byte_size(Body)),
 	ok = do_wait_peer_send_shutdown(StreamRef),
-	ok = do_wait_stream_closed(StreamRef),
+%	ok = do_wait_stream_closed(StreamRef),
 	#{
 		headers => Headers,
 		body => Body
@@ -1343,84 +1564,6 @@ do_wait_connection_closed(Conn) ->
 
 
 
-
-%% 4.3.2. Response Pseudo-Header Fields
-%% For responses, a single ":status" pseudo-header field is defined that
-%carries the HTTP status code; see Section 15 of [HTTP]. This pseudo-header
-%field MUST be included in all responses; otherwise, the response is malformed
-%(see Section 4.1.2).
-%% HTTP/3 does not define a way to carry the version or reason phrase that is
-%included in an HTTP/1.1 status line. HTTP/3 responses implicitly have a
-%protocol version of "3.0".
-
-%% 4.4. The CONNECT Method
-%% A CONNECT request MUST be constructed as follows:
-%%The :method pseudo-header field is set to "CONNECT"
-%%The :scheme and :path pseudo-header fields are omitted
-%%The :authority pseudo-header field contains the host and port to connect to
-%(equivalent to the authority-form of the request-target of CONNECT requests;
-%see Section 7.1 of [HTTP]).
-%% The request stream remains open at the end of the request to carry the data
-%to be transferred. A CONNECT request that does not conform to these
-%restrictions is malformed.
-%%
-%% Once the CONNECT method has completed, only DATA frames are permitted to be
-%sent on the stream. Extension frames MAY be used if specifically permitted by
-%the definition of the extension. Receipt of any other known frame type MUST be
-%treated as a connection error of type H3_FRAME_UNEXPECTED.%% @todo + review
-%how it should work beyond the handling of the CONNECT request
-
-%% 4.5. HTTP Upgrade
-%% HTTP/3 does not support the HTTP Upgrade mechanism (Section 7.8 of [HTTP])
-%or the 101 (Switching Protocols) informational status code (Section 15.2.2 of
-%[HTTP]).
-
-%% 4.6. Server Push
-%% The push ID space begins at zero and ends at a maximum value set by the
-%MAX_PUSH_ID frame. In particular, a server is not able to push until after the
-%client sends a MAX_PUSH_ID frame. A client sends MAX_PUSH_ID frames to control
-%the number of pushes that a server can promise. A server SHOULD use push IDs
-%sequentially, beginning from zero. A client MUST treat receipt of a push
-%stream as a connection error of type H3_ID_ERROR when no MAX_PUSH_ID frame has
-%been sent or when the stream references a push ID that is greater than the
-%maximum push ID.
-%% When the same push ID is promised on multiple request streams, the
-%decompressed request field sections MUST contain the same fields in the same
-%order, and both the name and the value in each field MUST be identical.
-%% Not all requests can be pushed. A server MAY push requests that have the following properties:
-%cacheable; see Section 9.2.3 of [HTTP]
-%safe; see Section 9.2.1 of [HTTP]
-%does not include request content or a trailer section
-%
-%% The server MUST include a value in the :authority pseudo-header field for
-%which the server is authoritative. If the client has not yet validated the
-%connection for the origin indicated by the pushed request, it MUST perform the
-%same verification process it would do before sending a request for that origin
-%on the connection; see Section 3.3. If this verification fails, the client
-%MUST NOT consider the server authoritative for that origin.
-%% Clients SHOULD send a CANCEL_PUSH frame upon receipt of a PUSH_PROMISE frame
-%carrying a request that is not cacheable, is not known to be safe, that
-%indicates the presence of request content, or for which it does not consider
-%the server authoritative. Any corresponding responses MUST NOT be used or
-%cached.
-%% Ordering of a PUSH_PROMISE frame in relation to certain parts of the
-%response is important. The server SHOULD send PUSH_PROMISE frames prior to
-%sending HEADERS or DATA frames that reference the promised responses. This
-%reduces the chance that a client requests a resource that will be pushed by
-%the server.
-%% Push stream data can also arrive after a client has cancelled a push. In
-%this case, the client can abort reading the stream with an error code of
-%H3_REQUEST_CANCELLED. This asks the server not to transfer additional data and
-%indicates that it will be discarded upon receipt.
-
-%% 5. Connection Closure
-%% 5.1. Idle Connections
-%% HTTP/3 implementations will need to open a new HTTP/3 connection for new
-%requests if the existing connection has been idle for longer than the idle
-%timeout negotiated during the QUIC handshake, and they SHOULD do so if
-%approaching the idle timeout; see Section 10.1 of [QUIC-TRANSPORT].
-%% Servers SHOULD NOT actively keep connections open.
-
 %% 5.2. Connection Shutdown
 %% Endpoints initiate the graceful shutdown of an HTTP/3 connection by sending
 %a GOAWAY frame. The GOAWAY frame contains an identifier that indicates to the
@@ -1429,11 +1572,13 @@ do_wait_connection_closed(Conn) ->
 %the client sends a push ID. Requests or pushes with the indicated identifier
 %or greater are rejected (Section 4.1.1) by the sender of the GOAWAY. This
 %identifier MAY be zero if no requests or pushes were processed.
+
 %% Upon sending a GOAWAY frame, the endpoint SHOULD explicitly cancel (see
 %Sections 4.1.1 and 7.2.3) any requests or pushes that have identifiers greater
 %than or equal to the one indicated, in order to clean up transport state for
 %the affected streams. The endpoint SHOULD continue to do so as more requests
 %or pushes arrive.
+
 %% Endpoints MUST NOT initiate new requests or promise new pushes on the
 %connection after receipt of a GOAWAY frame from the peer.
 %% Requests on stream IDs less than the stream ID in a GOAWAY frame from the
@@ -1441,31 +1586,39 @@ do_wait_connection_closed(Conn) ->
 %response is received, the stream is reset individually, another GOAWAY is
 %received with a lower stream ID than that of the request in question, or the
 %connection terminates.
+
 %% Servers MAY reject individual requests on streams below the indicated ID if
 %these requests were not processed.
+
 %% If a server receives a GOAWAY frame after having promised pushes with a push
 %ID greater than or equal to the identifier contained in the GOAWAY frame,
 %those pushes will not be accepted.
+
 %% Servers SHOULD send a GOAWAY frame when the closing of a connection is known
 %in advance, even if the advance notice is small, so that the remote peer can
 %know whether or not a request has been partially processed.
+
 %% An endpoint MAY send multiple GOAWAY frames indicating different
 %identifiers, but the identifier in each frame MUST NOT be greater than the
 %identifier in any previous frame, since clients might already have retried
 %unprocessed requests on another HTTP connection. Receiving a GOAWAY containing
 %a larger identifier than previously received MUST be treated as a connection
 %error of type H3_ID_ERROR.
+
 %% An endpoint that is attempting to gracefully shut down a connection can send
-%a GOAWAY frame with a value set to the maximum possible value (262-4 for
-%servers, 262-1 for clients).
+%a GOAWAY frame with a value set to the maximum possible value (2^62-4 for
+%servers, 2^62-1 for clients).
+
 %% Even when a GOAWAY indicates that a given request or push will not be
 %processed or accepted upon receipt, the underlying transport resources still
 %exist. The endpoint that initiated these requests can cancel them to clean up
 %transport state.
+
 %% Once all accepted requests and pushes have been processed, the endpoint can
 %permit the connection to become idle, or it MAY initiate an immediate closure
 %of the connection. An endpoint that completes a graceful shutdown SHOULD use
 %the H3_NO_ERROR error code when closing the connection.
+
 %% If a client has consumed all available bidirectional stream IDs with
 %requests, the server need not send a GOAWAY frame, since the client is unable
 %to make further requests. @todo OK that one's some weird stuff lol
@@ -1476,56 +1629,10 @@ do_wait_connection_closed(Conn) ->
 %as the QUIC CONNECTION_CLOSE frame improves the chances of the frame being
 %received by clients.
 
-%% 6. Stream Mapping and Usage
-%% 6.1. Bidirectional Streams
-%% an HTTP/3 server SHOULD configure non-zero minimum values for the number of
-%permitted streams and the initial stream flow-control window. So as to not
-%unnecessarily limit parallelism, at least 100 request streams SHOULD be
-%permitted at a time.
 
-%% 6.2. Unidirectional Streams
-%% Therefore, the transport parameters sent by both clients and servers MUST
-%allow the peer to create at least three unidirectional streams. These
-%transport parameters SHOULD also provide at least 1,024 bytes of flow-control
-%credit to each unidirectional stream.
-%% Note that an endpoint is not required to grant additional credits to create
-%more unidirectional streams if its peer consumes all the initial credits
-%before creating the critical unidirectional streams. Endpoints SHOULD create
-%the HTTP control stream as well as the unidirectional streams required by
-%mandatory extensions (such as the QPACK encoder and decoder streams) first,
-%and then create additional streams as allowed by their peer.
-%% Recipients of unknown stream types MUST either abort reading of the stream
-%or discard incoming data without further processing. If reading is aborted,
-%the recipient SHOULD use the H3_STREAM_CREATION_ERROR error code or a reserved
-%error code (Section 8.1). The recipient MUST NOT consider unknown stream types
-%to be a connection error of any kind.
-%% As certain stream types can affect connection state, a recipient SHOULD NOT
-%discard data from incoming unidirectional streams prior to reading the stream
-%type.
-%% Implementations MAY send stream types before knowing whether the peer
-%supports them. However, stream types that could modify the state or semantics
-%of existing protocol components, including QPACK or other extensions, MUST NOT
-%be sent until the peer is known to support them.
-%% A receiver MUST tolerate unidirectional streams being closed or reset prior
-%to the reception of the unidirectional stream header.
 
-%% 6.2.1. Control Streams
-%% A control stream is indicated by a stream type of 0x00. Data on this stream
-%consists of HTTP/3 frames, as defined in Section 7.2.
-%% Each side MUST initiate a single control stream at the beginning of the
-%connection and send its SETTINGS frame as the first frame on this stream. If
-%the first frame of the control stream is any other frame type, this MUST be
-%treated as a connection error of type H3_MISSING_SETTINGS. Only one control
-%stream per peer is permitted; receipt of a second stream claiming to be a
-%control stream MUST be treated as a connection error of type
-%H3_STREAM_CREATION_ERROR. The sender MUST NOT close the control stream, and
-%the receiver MUST NOT request that the sender close the control stream. If
-%either control stream is closed at any point, this MUST be treated as a
-%connection error of type H3_CLOSED_CRITICAL_STREAM. Connection errors are
-%described in Section 8.
-%% Because the contents of the control stream are used to manage the behavior
-%of other streams, endpoints SHOULD provide enough flow-control credit to keep
-%the peer's control stream from becoming blocked.
+
+
 
 %% 6.2.2. Push Streams
 %% A push stream is indicated by a stream type of 0x01, followed by the push ID

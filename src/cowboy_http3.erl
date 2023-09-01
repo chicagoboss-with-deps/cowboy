@@ -69,7 +69,6 @@
 -spec init(_, _, _) -> no_return().
 init(Parent, Conn, Opts) ->
 	{ok, SettingsBin, HTTP3Machine0} = cow_http3_machine:init(server, Opts),
-	{ok, Conn} = quicer:async_accept_stream(Conn, []),
 	%% Immediately open a control, encoder and decoder stream.
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -114,8 +113,7 @@ loop(State0=#state{conn=Conn}) ->
 		%% QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED
 		{quic, new_stream, StreamRef, #{flags := Flags}} ->
 %			ct:pal("new_stream ~p flags ~p", [StreamRef, Flags]),
-			%% Conn does not change.
-			{ok, Conn} = quicer:async_accept_stream(Conn, []),
+			ok = quicer:setopt(StreamRef, active, true),
 			State = stream_new_remote(State0, StreamRef, Flags),
 			loop(State);
 		%% QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE
@@ -213,11 +211,15 @@ parse_unidirectional_stream_header(State0=#state{http3_machine=HTTP3Machine0},
 		Data, Stream0=#stream{ref=StreamRef}, Props) ->
 	case cow_http3:parse_unidi_stream_header(Data) of
 		{ok, Type, Rest} when Type =:= control; Type =:= encoder; Type =:= decoder ->
-			HTTP3Machine = cow_http3_machine:set_unidi_remote_stream_type(
-				StreamRef, Type, HTTP3Machine0),
-			State = State0#state{http3_machine=HTTP3Machine},
-			Stream = Stream0#stream{status=normal},
-			parse(stream_update(State, Stream), Rest, StreamRef, Props);
+			case cow_http3_machine:set_unidi_remote_stream_type(
+					StreamRef, Type, HTTP3Machine0) of
+				{ok, HTTP3Machine} ->
+					State = State0#state{http3_machine=HTTP3Machine},
+					Stream = Stream0#stream{status=normal},
+					parse(stream_update(State, Stream), Rest, StreamRef, Props);
+				{error, Error={connection_error, _, _}, HTTP3Machine} ->
+					terminate(State0#state{http3_machine=HTTP3Machine}, Error)
+			end;
 		{ok, push, _} ->
 			terminate(State0, {connection_error, h3_stream_creation_error,
 				'Only servers can push. (RFC9114 6.2.2)'});
@@ -554,7 +556,7 @@ reset_stream(State0=#state{http3_machine=HTTP3Machine0}, StreamRef, Error) ->
 	end,
 	%% @todo Do we want to close both sides?
 	%% @todo Should we close the send side if the receive side was already closed?
-	quicer:shutdown_stream(StreamRef, ?QUIC_STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE,
+	quicer:shutdown_stream(StreamRef, ?QUIC_STREAM_SHUTDOWN_FLAG_ABORT,
 		cow_http3:error_to_code(Reason), infinity),
 	State1 = case cow_http3_machine:reset_stream(StreamRef, HTTP3Machine0) of
 		{ok, HTTP3Machine} ->
@@ -676,12 +678,17 @@ stream_new_remote(State=#state{http3_machine=HTTP3Machine0, streams=Streams}, St
 %	ct:pal("new stream ~p ~p", [Stream, HTTP3Machine]),
 	State#state{http3_machine=HTTP3Machine, streams=Streams#{StreamRef => Stream}}.
 
-stream_closed(State=#state{streams=Streams0}, StreamRef, _Flags) ->
-	%% @todo Some streams may not be bidi or remote. Need to inform cow_http3_machine too.
-	logger:error("stream_closed ~p", [StreamRef]),
-	Streams = maps:remove(StreamRef, Streams0),
-	%% @todo terminate stream
-	State#state{streams=Streams}.
+stream_closed(State=#state{http3_machine=HTTP3Machine0, streams=Streams0},
+		StreamRef, _Flags) ->
+	case cow_http3_machine:close_stream(StreamRef, HTTP3Machine0) of
+		{ok, HTTP3Machine} ->
+			%% @todo Some streams may not be bidi or remote.
+			Streams = maps:remove(StreamRef, Streams0),
+			%% @todo terminate stream
+			State#state{streams=Streams};
+		{error, Error={connection_error, _, _}, HTTP3Machine} ->
+			terminate(State#state{http3_machine=HTTP3Machine}, Error)
+	end.
 
 stream_update(State=#state{streams=Streams}, Stream=#stream{ref=StreamRef}) ->
 	State#state{streams=Streams#{StreamRef => Stream}}.

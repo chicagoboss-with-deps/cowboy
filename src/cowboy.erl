@@ -74,7 +74,7 @@ start_quic(TransOpts, ProtoOpts) ->
 	SocketOpts0 = maps:get(socket_opts, TransOpts, []),
 	SocketOpts = [
 		{alpn, ["h3"]}, %% @todo Why not binary?
-		{peer_unidi_stream_count, 100}, %% @todo Good default?
+		{peer_unidi_stream_count, 3}, %% We only need control and QPACK enc/dec.
 		{peer_bidi_stream_count, 100}
 	|SocketOpts0],
 	{ok, Listen} = quicer:listen(Port, SocketOpts),

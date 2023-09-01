@@ -18,6 +18,7 @@
 -export([init_unidi_local_streams/7]).
 -export([init_stream/5]).
 -export([set_unidi_remote_stream_type/3]).
+-export([close_stream/2]).
 -export([frame/4]).
 -export([prepare_headers/5]).
 -export([reset_stream/2]).
@@ -62,6 +63,9 @@
 	%% Currently active HTTP/3 streams. Streams may be initiated either
 	%% by the client or by the server through PUSH_PROMISE frames.
 	streams = #{} :: #{reference() => stream()},
+	%% @todo Maybe merge these two in some kind of control stream state.
+	has_peer_control_stream = false :: boolean(),
+	has_received_peer_settings = false :: boolean(),
 
 	%% QPACK decoding and encoding state.
 	decode_state = cow_qpack:init() :: cow_qpack:state(),
@@ -96,10 +100,29 @@ init_stream(StreamRef, StreamID, StreamDir, StreamType,
 
 -spec set_unidi_remote_stream_type(_, _, _) -> _. %% @todo
 
+set_unidi_remote_stream_type(_, control, State=#http3_machine{has_peer_control_stream=true}) ->
+	{error, {connection_error, h3_stream_creation_error,
+		'There can be only one control stream; yet a second one was opened. (RFC9114 6.2.1)'},
+		State};
 set_unidi_remote_stream_type(StreamRef, Type,
-		State=#http3_machine{streams=Streams}) ->
+		State=#http3_machine{streams=Streams, has_peer_control_stream=HasControl}) ->
 	#{StreamRef := Stream} = Streams,
-	State#http3_machine{streams=Streams#{StreamRef => Stream#stream{type=Type}}}.
+	{ok, State#http3_machine{
+		streams=Streams#{StreamRef => Stream#stream{type=Type}},
+		has_peer_control_stream=HasControl orelse (Type =:= control)
+	}}.
+
+-spec close_stream(_, _) -> _. %% @todo
+
+close_stream(StreamRef, State=#http3_machine{streams=Streams0}) ->
+	case maps:take(StreamRef, Streams0) of
+		{#stream{type=control}, Streams} ->
+			{error, {connection_error, h3_closed_critical_stream,
+				'The control stream was closed. (RFC9114 6.2.1)'},
+				State#http3_machine{streams=Streams}};
+		{_, Streams} ->
+			{ok, State#http3_machine{streams=Streams}}
+	end.
 
 -spec frame(_, _, _, _) -> _. %% @todo
 
@@ -107,7 +130,7 @@ frame(Frame, IsFin, StreamRef, State) ->
 	case element(1, Frame) of
 		data -> data_frame(Frame, IsFin, StreamRef, State);
 		headers -> headers_frame(Frame, IsFin, StreamRef, State);
-		settings -> {ok, State} %% @todo
+		settings -> settings_frame(Frame, IsFin, StreamRef, State)
 	end.
 
 %% DATA frame.
@@ -122,16 +145,18 @@ frame(Frame, IsFin, StreamRef, State) ->
 data_frame(Frame={data, Data}, IsFin, StreamRef, State) ->
 	DataLen = byte_size(Data),
 	case stream_get(StreamRef, State) of
-		Stream = #stream{remote=nofin} ->
+		Stream = #stream{type=req, remote=nofin} ->
 			data_frame(Frame, IsFin, Stream, State, DataLen);
-		#stream{remote=idle} ->
+		#stream{type=req, remote=idle} ->
 			{error, {connection_error, h3_frame_unexpected,
 				'DATA frame received before a HEADERS frame. (RFC9114 4.1)'},
 				State};
-		#stream{remote=fin} ->
+		#stream{type=req, remote=fin} ->
 			{error, {connection_error, h3_frame_unexpected,
 				'DATA frame received after trailer HEADERS frame. (RFC9114 4.1)'},
-				State}
+				State};
+		#stream{type=control} ->
+			control_frame(Frame, State)
 	end.
 
 data_frame(Frame, IsFin, Stream0=#stream{remote_read_size=StreamRead}, State0, DataLen) ->
@@ -170,19 +195,21 @@ headers_frame(Frame, IsFin, StreamRef, State=#http3_machine{mode=Mode}) ->
 	end.
 
 %% @todo We may receive HEADERS before or after DATA.
-server_headers_frame(Frame, IsFin, StreamRef, State=#http3_machine{streams=Streams}) ->
-	case Streams of
+server_headers_frame(Frame, IsFin, StreamRef, State) ->
+	case stream_get(StreamRef, State) of
 		%% Headers.
-		#{StreamRef := Stream=#stream{remote=idle}} ->
+		Stream=#stream{type=req, remote=idle} ->
 			headers_decode(Frame, IsFin, Stream, State, request);
 		%% Trailers.
-		#{StreamRef := Stream=#stream{remote=nofin}} ->
+		Stream=#stream{type=req, remote=nofin} ->
 			headers_decode(Frame, IsFin, Stream, State, trailers);
 		%% Additional frame received after trailers.
-		#{StreamRef := #stream{remote=fin}} ->
+		#stream{type=req, remote=fin} ->
 			{error, {connection_error, h3_frame_unexpected,
 				'HEADERS frame received after trailer HEADERS frame. (RFC9114 4.1)'},
-				State}
+				State};
+		#stream{type=control} ->
+			control_frame(Frame, State)
 	end.
 
 %% @todo Check whether connection_error or stream_error fits better.
@@ -411,6 +438,20 @@ trailers_frame(Stream0, State0=#http3_machine{local_decoder_ref=DecoderRef}, Dec
 %			stream_reset(StreamID, State, protocol_error,
 %				'The total size of DATA frames is different than the content-length. (RFC7540 8.1.2.6)')
 %	end.
+
+settings_frame(Frame, _IsFin, StreamRef, State) ->
+	case stream_get(StreamRef, State) of
+		#stream{type=control} ->
+			control_frame(Frame, State)
+	end.
+
+control_frame({settings, _Settings}, State=#http3_machine{has_received_peer_settings=false}) ->
+	{ok, State#http3_machine{has_received_peer_settings=true}};
+control_frame(_Frame, State=#http3_machine{has_received_peer_settings=false}) ->
+	{error, {connection_error, h3_missing_settings,
+		'The first frame on the control stream must be a SETTINGS frame. (RFC9114 6.2.1)'},
+		State}.
+%% @todo control_frame(Frame, State=#http3_machine{has_received_peer_settings=true}) ->
 
 
 %% Functions for sending a message header or body. Note that
