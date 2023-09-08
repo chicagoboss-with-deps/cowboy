@@ -20,6 +20,7 @@
 -export([set_unidi_remote_stream_type/3]).
 -export([close_stream/2]).
 -export([frame/4]).
+-export([ignored_frame/2]).
 -export([prepare_headers/5]).
 -export([reset_stream/2]).
 
@@ -75,7 +76,7 @@
 -spec init(_, _) -> _. %% @todo
 
 init(Mode, _Opts) ->
-	{ok, <<4,0>>, #http3_machine{mode=Mode}}.
+	{ok, cow_http3:settings(#{}), #http3_machine{mode=Mode}}.
 
 -spec init_unidi_local_streams(_, _, _, _, _ ,_ ,_) -> _. %% @todo
 
@@ -130,7 +131,11 @@ frame(Frame, IsFin, StreamRef, State) ->
 	case element(1, Frame) of
 		data -> data_frame(Frame, IsFin, StreamRef, State);
 		headers -> headers_frame(Frame, IsFin, StreamRef, State);
-		settings -> settings_frame(Frame, IsFin, StreamRef, State)
+		cancel_push -> cancel_push_frame(Frame, IsFin, StreamRef, State);
+		settings -> settings_frame(Frame, IsFin, StreamRef, State);
+		push_promise -> push_promise_frame(Frame, IsFin, StreamRef, State);
+		goaway -> goaway_frame(Frame, IsFin, StreamRef, State);
+		max_push_id -> max_push_id_frame(Frame, IsFin, StreamRef, State)
 	end.
 
 %% DATA frame.
@@ -439,7 +444,35 @@ trailers_frame(Stream0, State0=#http3_machine{local_decoder_ref=DecoderRef}, Dec
 %				'The total size of DATA frames is different than the content-length. (RFC7540 8.1.2.6)')
 %	end.
 
+cancel_push_frame(Frame, _IsFin, StreamRef, State) ->
+	case stream_get(StreamRef, State) of
+		#stream{type=control} ->
+			control_frame(Frame, State)
+	end.
+
 settings_frame(Frame, _IsFin, StreamRef, State) ->
+	case stream_get(StreamRef, State) of
+		#stream{type=control} ->
+			control_frame(Frame, State);
+		#stream{type=req} ->
+			{error, {connection_error, h3_frame_unexpected,
+				'The SETTINGS frame is not allowed on a bidi stream. (RFC9114 7.2.4)'},
+				State}
+	end.
+
+push_promise_frame(Frame, _IsFin, StreamRef, State) ->
+	case stream_get(StreamRef, State) of
+		#stream{type=control} ->
+			control_frame(Frame, State)
+	end.
+
+goaway_frame(Frame, _IsFin, StreamRef, State) ->
+	case stream_get(StreamRef, State) of
+		#stream{type=control} ->
+			control_frame(Frame, State)
+	end.
+
+max_push_id_frame(Frame, _IsFin, StreamRef, State) ->
 	case stream_get(StreamRef, State) of
 		#stream{type=control} ->
 			control_frame(Frame, State)
@@ -447,11 +480,36 @@ settings_frame(Frame, _IsFin, StreamRef, State) ->
 
 control_frame({settings, _Settings}, State=#http3_machine{has_received_peer_settings=false}) ->
 	{ok, State#http3_machine{has_received_peer_settings=true}};
+control_frame({settings, _}, State) ->
+	{error, {connection_error, h3_frame_unexpected,
+		'The SETTINGS frame cannot be sent more than once. (RFC9114 7.2.4)'},
+		State};
 control_frame(_Frame, State=#http3_machine{has_received_peer_settings=false}) ->
 	{error, {connection_error, h3_missing_settings,
 		'The first frame on the control stream must be a SETTINGS frame. (RFC9114 6.2.1)'},
+		State};
+control_frame(Frame = {goaway, _}, State) ->
+	{ok, Frame, State};
+%% @todo Implement server push.
+control_frame({max_push_id, _}, State) ->
+	{ok, State};
+control_frame(_Frame, State) ->
+	{error, {connection_error, h3_frame_unexpected,
+		'DATA and HEADERS frames are not allowed on the control stream. (RFC9114 7.2.1, RFC9114 7.2.2)'},
 		State}.
-%% @todo control_frame(Frame, State=#http3_machine{has_received_peer_settings=true}) ->
+
+%% Ignored frames.
+
+-spec ignored_frame(_, _) -> _. %% @todo
+
+ignored_frame(StreamRef, State) ->
+	case stream_get(StreamRef, State) of
+		#stream{type=control} ->
+			control_frame(ignored_frame, State);
+		_ ->
+			{ok, State}
+	end.
+
 
 
 %% Functions for sending a message header or body. Note that

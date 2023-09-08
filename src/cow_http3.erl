@@ -22,6 +22,7 @@
 %% Building.
 -export([data/1]).
 -export([headers/1]).
+-export([settings/1]).
 -export([error_to_code/1]).
 -export([encode_int/1]).
 
@@ -54,6 +55,18 @@ parse(<<0, 3:2, Len:62, Data/bits>>) when byte_size(Data) < Len ->
 %%
 %% HEADERS frames.
 %%
+parse(<<1, 0:2, 0:6, _/bits>>) ->
+	{connection_error, h3_frame_error,
+		'HEADERS frames payload CANNOT be 0 bytes wide. (RFC9114 7.1, RFC9114 7.2.2)'};
+parse(<<1, 1:2, 0:14, _/bits>>) ->
+	{connection_error, h3_frame_error,
+		'HEADERS frames payload CANNOT be 0 bytes wide. (RFC9114 7.1, RFC9114 7.2.2)'};
+parse(<<1, 2:2, 0:30, _/bits>>) ->
+	{connection_error, h3_frame_error,
+		'HEADERS frames payload CANNOT be 0 bytes wide. (RFC9114 7.1, RFC9114 7.2.2)'};
+parse(<<1, 3:2, 0:62, _/bits>>) ->
+	{connection_error, h3_frame_error,
+		'HEADERS frames payload CANNOT be 0 bytes wide. (RFC9114 7.1, RFC9114 7.2.2)'};
 parse(<<1, 0:2, Len:6, EncodedFieldSection:Len/binary, Rest/bits>>) ->
 	{ok, {headers, EncodedFieldSection}, Rest};
 parse(<<1, 1:2, Len:14, EncodedFieldSection:Len/binary, Rest/bits>>) ->
@@ -109,6 +122,8 @@ parse(<<7, 0:2, 4:6, 2:2, StreamOrPushID:30, Rest/bits>>) ->
 	{ok, {goaway, StreamOrPushID}, Rest};
 parse(<<7, 0:2, 8:6, 3:2, StreamOrPushID:62, Rest/bits>>) ->
 	{ok, {goaway, StreamOrPushID}, Rest};
+parse(<<7, 0:2, N:6, _/bits>>) when N =:= 1; N =:= 2; N =:= 4; N =:= 8 ->
+	more;
 parse(<<7, _/bits>>) ->
 	{connection_error, h3_frame_error,
 		'GOAWAY frames payload MUST be 1, 2, 4 or 8 bytes wide. (RFC9114 7.1, RFC9114 7.2.6)'};
@@ -123,6 +138,8 @@ parse(<<13, 0:2, 4:6, 2:2, PushID:30, Rest/bits>>) ->
 	{ok, {max_push_id, PushID}, Rest};
 parse(<<13, 0:2, 8:6, 3:2, PushID:62, Rest/bits>>) ->
 	{ok, {max_push_id, PushID}, Rest};
+parse(<<13, 0:2, N:6, _/bits>>) when N =:= 1; N =:= 2; N =:= 4; N =:= 8 ->
+	more;
 parse(<<13, _/bits>>) ->
 	{connection_error, h3_frame_error,
 		'MAX_PUSH_ID frames payload MUST be 1, 2, 4 or 8 bytes wide. (RFC9114 7.1, RFC9114 7.2.6)'};
@@ -287,7 +304,10 @@ code_to_error(16#010c) -> h3_request_cancelled;
 code_to_error(16#010d) -> h3_request_incomplete;
 code_to_error(16#010e) -> h3_message_error;
 code_to_error(16#010f) -> h3_connect_error;
-code_to_error(16#0110) -> h3_version_fallback.
+code_to_error(16#0110) -> h3_version_fallback;
+%% Unknown/reserved error codes must be treated
+%% as equivalent to H3_NO_ERROR.
+code_to_error(_) -> h3_no_error.
 
 %% Building.
 
@@ -303,9 +323,30 @@ headers(HeaderBlock) ->
 	Len = encode_int(iolist_size(HeaderBlock)),
 	[<<1:8>>, Len, HeaderBlock].
 
+-spec settings(_) -> todo.
+
+settings(Settings) when Settings =:= #{} ->
+	<<4:8, 0:8>>;
+settings(Settings) ->
+	Payload = settings_payload(Settings),
+	Len = encode_int(iolist_size(Payload)),
+	[<<4:8>>, Len, Payload].
+
+settings_payload(Settings) ->
+	[case Key of
+		max_header_list_size when Value =:= infinity -> <<>>;
+		max_header_list_size -> [encode_int(6), encode_int(Value)]
+	end || {Key, Value} <- maps:to_list(Settings)].
+
 -spec error_to_code(_) -> todo.
 
-error_to_code(h3_no_error) -> 16#0100;
+error_to_code(h3_no_error) ->
+	%% Implementations should select a reserved error code
+	%% with some probability when they would have sent H3_NO_ERROR. (RFC9114 8.1)
+	case rand:uniform(2) of
+		1 -> 16#0100;
+		2 -> 16#1f * (rand:uniform(148764065110560900) - 1) + 16#21
+	end;
 error_to_code(h3_general_protocol_error) -> 16#0101;
 error_to_code(h3_internal_error) -> 16#0102;
 error_to_code(h3_stream_creation_error) -> 16#0103;

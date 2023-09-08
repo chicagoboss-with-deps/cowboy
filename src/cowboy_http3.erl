@@ -30,7 +30,7 @@
 	ref :: any(), %% @todo specs
 
 	%% Whether the stream is currently in a special state.
-	status :: header | normal | data | discard, %% @todo What's 'data'?
+	status :: header | normal | {data, non_neg_integer()} | discard,
 
 	%% Stream buffer.
 	buffer = <<>> :: binary(),
@@ -179,22 +179,48 @@ parse(State=#state{streams=Streams, opts=Opts}, Data, StreamRef, Props) ->
 %% @todo Swap Data and Stream/StreamRef.
 parse1(State, Data, Stream=#stream{status=header}, Props) ->
 	parse_unidirectional_stream_header(State, Data, Stream, Props);
-%% @todo Continuation clause for data frames.
+parse1(State, Data, Stream=#stream{status={data, Len}, ref=StreamRef}, Props) ->
+	DataLen = byte_size(Data),
+	if
+		DataLen < Len ->
+			IsFin = is_fin(Props, <<>>),
+			loop(frame(State, Stream#stream{status={data, Len - DataLen}}, {data, Data}, IsFin));
+		true ->
+			<<Data1:Len/binary, Rest/bits>> = Data,
+			IsFin = is_fin(Props, Rest),
+			parse(frame(State, Stream#stream{status=normal}, {data, Data1}, IsFin),
+				Rest, StreamRef, Props)
+	end;
 %% @todo Clause that discards receiving data for aborted streams.
 parse1(State, Data, Stream=#stream{ref=StreamRef}, Props) ->
 	case cow_http3:parse(Data) of
 		{ok, Frame, Rest} ->
 			IsFin = is_fin(Props, Rest),
 			parse(frame(State, Stream, Frame, IsFin), Rest, StreamRef, Props);
-		{more, Frame, _Len} ->
-			%% @todo Change state of stream to expect more data frames.
-			loop(frame(State, Stream, Frame, nofin));
+		{more, Frame, Len} ->
+			IsFin = is_fin(Props, <<>>),
+			case IsFin of
+				nofin ->
+					loop(frame(State, Stream#stream{status={data, Len}}, Frame, nofin));
+				fin ->
+					terminate(State, {connection_error, h3_frame_error,
+						'Last frame on stream was truncated. (RFC9114 7.1)'})
+			end;
 		{ignore, Rest} ->
 			parse(ignored_frame(State, Stream), Rest, StreamRef, Props);
 		Error = {connection_error, _, _} ->
 			terminate(State, Error);
+		more when Data =:= <<>> ->
+			loop(stream_update(State, Stream#stream{buffer=Data}));
 		more ->
-			loop(stream_update(State, Stream#stream{buffer=Data}))
+			IsFin = is_fin(Props, <<>>),
+			case IsFin of
+				nofin ->
+					loop(stream_update(State, Stream#stream{buffer=Data}));
+				fin ->
+					terminate(State, {connection_error, h3_frame_error,
+						'Last frame on stream was truncated. (RFC9114 7.1)'})
+			end
 	end.
 
 %% We may receive multiple frames in a single QUIC packet.
@@ -226,7 +252,7 @@ parse_unidirectional_stream_header(State0=#state{http3_machine=HTTP3Machine0},
 		%% Unknown stream types must be ignored. We choose to abort the
 		%% stream instead of reading and discarding the incoming data.
 		{undefined, _} ->
-			loop(stream_abort_receive(State0, Stream0, h3_stream_creation_error))
+			loop(stream_abort_receive(State0, Stream0, h3_no_error))
 	end.
 
 frame(State=#state{http3_machine=HTTP3Machine0}, Stream=#stream{ref=StreamRef}, Frame, IsFin) ->
@@ -235,6 +261,7 @@ frame(State=#state{http3_machine=HTTP3Machine0}, Stream=#stream{ref=StreamRef}, 
 			State#state{http3_machine=HTTP3Machine};
 		{ok, {data, Data}, HTTP3Machine} ->
 			data_frame(State#state{http3_machine=HTTP3Machine}, Stream, IsFin, Data);
+		%% @todo I don't think we need the IsFin in the {headers tuple.
 		{ok, {headers, IsFin, Headers, PseudoHeaders, BodyLen}, HTTP3Machine} ->
 			headers_frame(State#state{http3_machine=HTTP3Machine},
 				Stream, IsFin, Headers, PseudoHeaders, BodyLen);
@@ -247,6 +274,8 @@ frame(State=#state{http3_machine=HTTP3Machine0}, Stream=#stream{ref=StreamRef}, 
 		{ok, {trailers, _Trailers}, HTTP3Machine} ->
 			%% @todo Propagate trailers.
 			State#state{http3_machine=HTTP3Machine};
+		{ok, GoAway={goaway, _}, HTTP3Machine} ->
+			goaway(State#state{http3_machine=HTTP3Machine}, GoAway);
 		{error, Error={stream_error, _Reason, _Human}, HTTP3Machine} ->
 			reset_stream(State#state{http3_machine=HTTP3Machine}, StreamRef, Error);
 		{error, Error={connection_error, _, _}, HTTP3Machine} ->
@@ -467,11 +496,13 @@ commands(State0, StreamRef, [{response, StatusCode, Headers, Body}|Tail]) ->
 %	commands(State, StreamRef, Tail);
 %%% Read the request body.
 %commands(State0=#state{flow=Flow, streams=Streams}, StreamRef, [{flow, Size}|Tail]) ->
+commands(State, StreamRef, [{flow, _Size}|Tail]) ->
+	%% @todo We should tell the QUIC stream to increase its window size.
 %	#{StreamRef := Stream=#stream{flow=StreamFlow}} = Streams,
 %	State = update_window(State0#state{flow=Flow + Size,
 %		streams=Streams#{StreamRef => Stream#stream{flow=StreamFlow + Size}}},
 %		StreamRef),
-%	commands(State, StreamRef, Tail);
+	commands(State, StreamRef, Tail);
 %% Supervise a child process.
 commands(State=#state{children=Children}, StreamRef, [{spawn, Pid, Shutdown}|Tail]) ->
 	 commands(State#state{children=cowboy_children:up(Children, Pid, StreamRef, Shutdown)},
@@ -601,16 +632,23 @@ stop_stream(_, _) ->
 maybe_terminate_stream(_, _, _) ->
 	todo.
 
-%% @todo In ignored_frame we must check for example that the frame
-%%       we received wasn't the first frame in a control stream
-%%       as that one must be SETTINGS.
-ignored_frame(State, _) ->
-	State.
+ignored_frame(State=#state{http3_machine=HTTP3Machine0}, #stream{ref=StreamRef}) ->
+	case cow_http3_machine:ignored_frame(StreamRef, HTTP3Machine0) of
+		{ok, HTTP3Machine} ->
+			State#state{http3_machine=HTTP3Machine};
+		{error, Error={connection_error, _, _}, HTTP3Machine} ->
+			terminate(State#state{http3_machine=HTTP3Machine}, Error)
+	end.
 
 stream_abort_receive(State, Stream=#stream{ref=StreamRef}, Reason) ->
 	quicer:shutdown_stream(StreamRef, ?QUIC_STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE,
-		error_code(Reason), infinity),
+		cow_http3:error_to_code(Reason), infinity),
 	stream_update(State, Stream#stream{status=discard}).
+
+%% @todo Graceful connection shutdown.
+%% We terminate the connection immediately if it hasn't fully been initialized.
+goaway(State, {goaway, _}) ->
+	terminate(State, {stop, goaway, 'The connection is going away.'}).
 
 terminate(State=#state{conn=Conn, %http3_status=Status,
 		%http3_machine=HTTP3Machine,
@@ -632,8 +670,8 @@ terminate(State=#state{conn=Conn, %http3_status=Status,
 		cow_http3:error_to_code(terminate_reason(Reason))),
 	exit({shutdown, Reason}).
 
-terminate_reason({connection_error, Reason, _}) -> Reason.
-%terminate_reason({stop, _, _}) -> no_error;
+terminate_reason({connection_error, Reason, _}) -> Reason;
+terminate_reason({stop, _, _}) -> h3_no_error.
 %terminate_reason({socket_error, _, _}) -> internal_error;
 %terminate_reason({internal_error, _, _}) -> internal_error.
 
@@ -647,24 +685,6 @@ terminate_all_streams(State, [{StreamID, #stream{state=StreamState}}|Tail], Reas
 
 
 
-%% @todo qpack errors
-error_code(h3_no_error) -> 16#0100;
-error_code(h3_general_protocol_error) -> 16#0101;
-error_code(h3_internal_error) -> 16#0102;
-error_code(h3_stream_creation_error) -> 16#0103;
-error_code(h3_closed_critical_stream) -> 16#0104;
-error_code(h3_frame_unexpected) -> 16#0105;
-error_code(h3_frame_error) -> 16#0106;
-error_code(h3_excessive_load) -> 16#0107;
-error_code(h3_id_error) -> 16#0108;
-error_code(h3_settings_error) -> 16#0109;
-error_code(h3_missing_settings) -> 16#010a;
-error_code(h3_request_rejected) -> 16#010b;
-error_code(h3_request_cancelled) -> 16#010c;
-error_code(h3_request_incomplete) -> 16#010d;
-error_code(h3_message_error) -> 16#010e;
-error_code(h3_connect_error) -> 16#010f;
-error_code(h3_version_fallback) -> 16#0110.
 
 stream_new_remote(State=#state{http3_machine=HTTP3Machine0, streams=Streams}, StreamRef, Flags) ->
 	{ok, StreamID} = quicer:get_stream_id(StreamRef),
@@ -685,7 +705,7 @@ stream_closed(State=#state{http3_machine=HTTP3Machine0, streams=Streams0},
 			%% @todo Some streams may not be bidi or remote.
 			Streams = maps:remove(StreamRef, Streams0),
 			%% @todo terminate stream
-			State#state{streams=Streams};
+			State#state{http3_machine=HTTP3Machine, streams=Streams};
 		{error, Error={connection_error, _, _}, HTTP3Machine} ->
 			terminate(State#state{http3_machine=HTTP3Machine}, Error)
 	end.

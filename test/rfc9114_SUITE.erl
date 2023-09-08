@@ -39,8 +39,8 @@ end_per_group(_Name, _) ->
 
 init_routes(_) -> [
 	{"localhost", [
-		{"/", hello_h, []}%,
-%		{"/echo/:key", echo_h, []},
+		{"/", hello_h, []},
+		{"/echo/:key", echo_h, []}%,
 %		{"/delay_hello", delay_hello_h, 1200},
 %		{"/long_polling", long_polling_h, []},
 %		{"/loop_handler_abort", loop_handler_abort_h, []},
@@ -100,8 +100,7 @@ req_stream(Config) ->
 		<<1>>, %% HEADERS frame.
 		cow_http3:encode_int(iolist_size(EncodedRequest)),
 		EncodedRequest
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	%% Receive the response.
 	{ok, Data} = do_receive_data(StreamRef),
 	{HLenEnc, HLenBits} = do_guess_int_encoding(Data),
@@ -252,8 +251,7 @@ headers_then_trailers(Config) ->
 		<<1>>, %% HEADERS frame for trailers.
 		cow_http3:encode_int(iolist_size(EncodedTrailers)),
 		EncodedTrailers
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	#{
 		headers := #{<<":status">> := <<"200">>},
 		body := <<"Hello world!">>
@@ -285,8 +283,7 @@ headers_then_data_then_trailers(Config) ->
 		<<1>>, %% HEADERS frame for trailers.
 		cow_http3:encode_int(iolist_size(EncodedTrailers)),
 		EncodedTrailers
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	#{
 		headers := #{<<":status">> := <<"200">>},
 		body := <<"Hello world!">>
@@ -312,8 +309,7 @@ data_then_headers(Config) ->
 		<<1>>, %% HEADERS frame.
 		cow_http3:encode_int(iolist_size(EncodedHeaders)),
 		EncodedHeaders
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	%% The connection should have been closed.
 	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
 	ok.
@@ -343,8 +339,7 @@ headers_then_trailers_then_data(Config) ->
 		<<0>>, %% DATA frame.
 		cow_http3:encode_int(13),
 		<<"Hello server!">>
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	%% The connection should have been closed.
 	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
 	ok.
@@ -377,8 +372,7 @@ headers_then_data_then_trailers_then_data(Config) ->
 		<<0>>, %% DATA frame.
 		cow_http3:encode_int(13),
 		<<"Hello server!">>
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	%% The connection should have been closed.
 	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
 	ok.
@@ -414,8 +408,7 @@ headers_then_data_then_trailers_then_trailers(Config) ->
 		<<1>>, %% HEADERS frame for trailers.
 		cow_http3:encode_int(iolist_size(EncodedTrailers2)),
 		EncodedTrailers2
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	%% The connection should have been closed.
 	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
 	ok.
@@ -443,8 +436,7 @@ unknown_then_headers(Config, Type, Bytes) ->
 		<<1>>, %% HEADERS frame.
 		cow_http3:encode_int(iolist_size(EncodedHeaders)),
 		EncodedHeaders
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	#{
 		headers := #{<<":status">> := <<"200">>},
 		body := <<"Hello world!">>
@@ -474,8 +466,7 @@ headers_then_unknown(Config, Type, Bytes) ->
 		cow_http3:encode_int(Type), %% Unknown frame.
 		cow_http3:encode_int(iolist_size(Bytes)),
 		Bytes
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	#{
 		headers := #{<<":status">> := <<"200">>},
 		body := <<"Hello world!">>
@@ -508,8 +499,7 @@ headers_then_data_then_unknown(Config, Type, Bytes) ->
 		cow_http3:encode_int(Type), %% Unknown frame.
 		cow_http3:encode_int(iolist_size(Bytes)),
 		Bytes
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	#{
 		headers := #{<<":status">> := <<"200">>},
 		body := <<"Hello world!">>
@@ -545,8 +535,7 @@ headers_then_trailers_then_unknown(Config, Type, Bytes) ->
 		cow_http3:encode_int(Type), %% Unknown frame.
 		cow_http3:encode_int(iolist_size(Bytes)),
 		Bytes
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	#{
 		headers := #{<<":status">> := <<"200">>},
 		body := <<"Hello world!">>
@@ -586,8 +575,7 @@ headers_then_data_then_unknown_then_trailers(Config, Type, Bytes) ->
 		<<1>>, %% HEADERS frame for trailers.
 		cow_http3:encode_int(iolist_size(EncodedTrailers)),
 		EncodedTrailers
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	#{
 		headers := #{<<":status">> := <<"200">>},
 		body := <<"Hello world!">>
@@ -624,8 +612,7 @@ headers_then_data_then_unknown_then_data(Config, Type, Bytes) ->
 		<<0>>, %% DATA frame.
 		cow_http3:encode_int(7),
 		<<"server!">>
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	#{
 		headers := #{<<":status">> := <<"200">>},
 		body := <<"Hello world!">>
@@ -665,8 +652,7 @@ headers_then_data_then_trailers_then_unknown(Config, Type, Bytes) ->
 		cow_http3:encode_int(Type), %% Unknown frame.
 		cow_http3:encode_int(iolist_size(Bytes)),
 		Bytes
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	#{
 		headers := #{<<":status">> := <<"200">>},
 		body := <<"Hello world!">>
@@ -688,28 +674,28 @@ reserved_then_headers(Config) ->
 	doc("Receipt of reserved frame followed by HEADERS "
 		"must be accepted when the reserved frame type is "
 		"of the format 0x1f * N + 0x21. (RFC9114 4.1, RFC9114 7.2.8)"),
-	unknown_then_headers(Config, do_reserved_frame_type(),
+	unknown_then_headers(Config, do_reserved_type(),
 		rand:bytes(rand:uniform(4096))).
 
 headers_then_reserved(Config) ->
 	doc("Receipt of HEADERS followed by reserved frame "
 		"must be accepted when the reserved frame type is "
 		"of the format 0x1f * N + 0x21. (RFC9114 4.1, RFC9114 7.2.8)"),
-	headers_then_unknown(Config, do_reserved_frame_type(),
+	headers_then_unknown(Config, do_reserved_type(),
 		rand:bytes(rand:uniform(4096))).
 
 headers_then_data_then_reserved(Config) ->
 	doc("Receipt of HEADERS followed by DATA followed by reserved frame "
 		"must be accepted when the reserved frame type is "
 		"of the format 0x1f * N + 0x21. (RFC9114 4.1, RFC9114 7.2.8)"),
-	headers_then_data_then_unknown(Config, do_reserved_frame_type(),
+	headers_then_data_then_unknown(Config, do_reserved_type(),
 		rand:bytes(rand:uniform(4096))).
 
 headers_then_trailers_then_reserved(Config) ->
 	doc("Receipt of HEADERS followed by trailer HEADERS followed by reserved frame "
 		"must be accepted when the reserved frame type is "
 		"of the format 0x1f * N + 0x21. (RFC9114 4.1, RFC9114 7.2.8)"),
-	headers_then_trailers_then_unknown(Config, do_reserved_frame_type(),
+	headers_then_trailers_then_unknown(Config, do_reserved_type(),
 		rand:bytes(rand:uniform(4096))).
 
 headers_then_data_then_reserved_then_trailers(Config) ->
@@ -718,7 +704,7 @@ headers_then_data_then_reserved_then_trailers(Config) ->
 		"must be accepted when the reserved frame type is "
 		"of the format 0x1f * N + 0x21. (RFC9114 4.1, RFC9114 7.2.8)"),
 	headers_then_data_then_unknown_then_trailers(Config,
-		do_reserved_frame_type(), rand:bytes(rand:uniform(4096))).
+		do_reserved_type(), rand:bytes(rand:uniform(4096))).
 
 headers_then_data_then_reserved_then_data(Config) ->
 	doc("Receipt of HEADERS followed by DATA followed by "
@@ -726,7 +712,7 @@ headers_then_data_then_reserved_then_data(Config) ->
 		"must be accepted when the reserved frame type is "
 		"of the format 0x1f * N + 0x21. (RFC9114 4.1, RFC9114 7.2.8)"),
 	headers_then_data_then_unknown_then_data(Config,
-		do_reserved_frame_type(), rand:bytes(rand:uniform(4096))).
+		do_reserved_type(), rand:bytes(rand:uniform(4096))).
 
 headers_then_data_then_trailers_then_reserved(Config) ->
 	doc("Receipt of HEADERS followed by DATA followed by "
@@ -734,9 +720,9 @@ headers_then_data_then_trailers_then_reserved(Config) ->
 		"must be accepted when the reserved frame type is "
 		"of the format 0x1f * N + 0x21. (RFC9114 4.1, RFC9114 7.2.8)"),
 	headers_then_data_then_trailers_then_unknown(Config,
-		do_reserved_frame_type(), rand:bytes(rand:uniform(4096))).
+		do_reserved_type(), rand:bytes(rand:uniform(4096))).
 
-do_reserved_frame_type() ->
+do_reserved_type() ->
 	16#1f * (rand:uniform(148764065110560900) - 1) + 16#21.
 
 reject_transfer_encoding_header_with_body(Config) ->
@@ -923,8 +909,7 @@ accept_te_header_value_trailers(Config) ->
 		<<1>>, %% HEADERS frame for trailers.
 		cow_http3:encode_int(iolist_size(EncodedTrailers)),
 		EncodedTrailers
-	]),
-	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	#{
 		headers := #{<<":status">> := <<"200">>},
 		body := <<"Hello world!">>
@@ -1111,8 +1096,7 @@ accept_host_header_on_missing_pseudo_header_authority(Config) ->
 		<<1>>, %% HEADERS frame.
 		cow_http3:encode_int(iolist_size(EncodedHeaders)),
 		EncodedHeaders
-	]),
-%	ok = do_async_stream_shutdown(StreamRef),
+	], ?QUIC_SEND_FLAG_FIN),
 	#{
 		headers := #{<<":status">> := <<"200">>},
 		body := <<"Hello world!">>
@@ -1219,7 +1203,7 @@ unidi_allow_at_least_three(Config) ->
 		error(timeout)
 	end,
 	%% Confirm that we can create the unidi streams.
-	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(server, #{}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
 	{ok, _} = quicer:send(ControlRef, [<<0>>, SettingsBin]),
@@ -1294,66 +1278,173 @@ do_accept_qpack_stream(Conn) ->
 %% A receiver MUST tolerate unidirectional streams being closed or reset prior
 %% to the reception of the unidirectional stream header.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-%% A control stream is indicated by a stream type of 0x00. Data on this stream
-%% consists of HTTP/3 frames, as defined in Section 7.2.
-
 %% Each side MUST initiate a single control stream at the beginning of the
 %% connection and send its SETTINGS frame as the first frame on this stream.
 %% @todo What to do when the client never opens a control stream?
 %% @todo Similarly, a stream could be opened but with no data being sent.
 %% @todo Similarly, a control stream could be opened with no SETTINGS frame sent.
 
-
-
-
-
-%% If
-%% the first frame of the control stream is any other frame type, this MUST be
-%% treated as a connection error of type H3_MISSING_SETTINGS.
-
 control_reject_first_frame_data(Config) ->
+	doc("The first frame on a control stream must be a SETTINGS frame "
+		"or the connection must be closed with an H3_MISSING_SETTINGS "
+		"connection error. (RFC9114 6.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		<<0>>, %% DATA frame.
+		cow_http3:encode_int(12),
+		<<"Hello world!">>
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_missing_settings} = do_wait_connection_closed(Conn),
+	ok.
+
+control_reject_first_frame_headers(Config) ->
+	doc("The first frame on a control stream must be a SETTINGS frame "
+		"or the connection must be closed with an H3_MISSING_SETTINGS "
+		"connection error. (RFC9114 6.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, EncodedHeaders, _EncData, _EncSt} = cow_qpack:encode_field_section([
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":authority">>, <<"localhost">>},
+		{<<":path">>, <<"/">>},
+		{<<"content-length">>, <<"0">>}
+	], 0, cow_qpack:init()),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		<<1>>, %% HEADERS frame.
+		cow_http3:encode_int(iolist_size(EncodedHeaders)),
+		EncodedHeaders
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_missing_settings} = do_wait_connection_closed(Conn),
+	ok.
+
+control_reject_first_frame_cancel_push(Config) ->
+	doc("The first frame on a control stream must be a SETTINGS frame "
+		"or the connection must be closed with an H3_MISSING_SETTINGS "
+		"connection error. (RFC9114 6.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		<<3>>, %% CANCEL_PUSH frame.
+		cow_http3:encode_int(1),
+		cow_http3:encode_int(0)
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_missing_settings} = do_wait_connection_closed(Conn),
+	ok.
+
+control_accept_first_frame_settings(Config) ->
 	doc("The first frame on a control stream "
 		"must be a SETTINGS frame. (RFC9114 6.2.1)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
-	{ok, _} = quicer:send(ControlRef, [<<0>>, <<0, 12, "Hello world!">>]),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin
+	]),
+	%% The connection should remain up.
+	receive
+		{quic, shutdown, Conn, {unknown_quic_status, Code}} ->
+			Reason = cow_http3:code_to_error(Code),
+			error(Reason)
+	after 1000 ->
+		ok
+	end.
+
+control_reject_first_frame_push_promise(Config) ->
+	doc("The first frame on a control stream must be a SETTINGS frame "
+		"or the connection must be closed with an H3_MISSING_SETTINGS "
+		"connection error. (RFC9114 6.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, EncodedHeaders, _EncData, _EncSt} = cow_qpack:encode_field_section([
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":authority">>, <<"localhost">>},
+		{<<":path">>, <<"/">>},
+		{<<"content-length">>, <<"0">>}
+	], 0, cow_qpack:init()),
+
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		<<5>>, %% PUSH_PROMISE frame.
+		cow_http3:encode_int(iolist_size(EncodedHeaders) + 1),
+		cow_http3:encode_int(0),
+		EncodedHeaders
+	]),
 	%% The connection should have been closed.
 	#{reason := h3_missing_settings} = do_wait_connection_closed(Conn),
 	ok.
 
-%% @todo
-%control_reject_first_frame_headers(Config) ->
-%control_reject_first_frame_cancel_push(Config) ->
-%control_reject_first_frame_push_promise(Config) ->
-%control_accept_first_frame_settings(Config) ->
-%control_reject_first_frame_goaway(Config) ->
-%control_reject_first_frame_max_push_id(Config) ->
-%control_reject_first_frame_reserved(Config) ->
+control_reject_first_frame_goaway(Config) ->
+	doc("The first frame on a control stream must be a SETTINGS frame "
+		"or the connection must be closed with an H3_MISSING_SETTINGS "
+		"connection error. (RFC9114 6.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		<<7>>, %% GOAWAY frame.
+		cow_http3:encode_int(1),
+		cow_http3:encode_int(0)
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_missing_settings} = do_wait_connection_closed(Conn),
+	ok.
 
+control_reject_first_frame_max_push_id(Config) ->
+	doc("The first frame on a control stream must be a SETTINGS frame "
+		"or the connection must be closed with an H3_MISSING_SETTINGS "
+		"connection error. (RFC9114 6.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		<<13>>, %% MAX_PUSH_ID frame.
+		cow_http3:encode_int(1),
+		cow_http3:encode_int(0)
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_missing_settings} = do_wait_connection_closed(Conn),
+	ok.
 
-
-
+control_reject_first_frame_reserved(Config) ->
+	doc("The first frame on a control stream must be a SETTINGS frame "
+		"or the connection must be closed with an H3_MISSING_SETTINGS "
+		"connection error. (RFC9114 6.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	Len = rand:uniform(512),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		cow_http3:encode_int(do_reserved_type()),
+		cow_http3:encode_int(Len),
+		rand:bytes(Len)
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_missing_settings} = do_wait_connection_closed(Conn),
+	ok.
 
 control_reject_multiple(Config) ->
 	doc("Endpoints must not create multiple control streams. (RFC9114 6.2.1)"),
 	#{conn := Conn} = do_connect(Config),
 	%% Create two control streams.
-	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(server, #{}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
 	{ok, ControlRef1} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
 	{ok, _} = quicer:send(ControlRef1, [<<0>>, SettingsBin]),
@@ -1367,7 +1458,7 @@ control_reject_multiple(Config) ->
 control_local_closed_abort(Config) ->
 	doc("Endpoints must not close the control stream. (RFC9114 6.2.1)"),
 	#{conn := Conn} = do_connect(Config),
-	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(server, #{}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
 	{ok, _} = quicer:send(ControlRef, [<<0>>, SettingsBin]),
@@ -1382,7 +1473,7 @@ control_local_closed_abort(Config) ->
 control_local_closed_graceful(Config) ->
 	doc("Endpoints must not close the control stream. (RFC9114 6.2.1)"),
 	#{conn := Conn} = do_connect(Config),
-	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(server, #{}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
 	{ok, _} = quicer:send(ControlRef, [<<0>>, SettingsBin]),
@@ -1403,21 +1494,487 @@ control_remote_closed_abort(Config) ->
 
 %% We cannot gracefully shutdown a remote unidi stream; only abort reading.
 
-
-
-
-
-
 %% Because the contents of the control stream are used to manage the behavior
-%of other streams, endpoints SHOULD provide enough flow-control credit to keep
-%the peer's control stream from becoming blocked.
+%% of other streams, endpoints SHOULD provide enough flow-control credit to keep
+%% the peer's control stream from becoming blocked.
 
-%% 2 control streams => error
-%% no stream type sent (= no control stream)
-%% no settings frame sent
-%% another frame sent instead of settings
-%% close control stream
-%% flow control?
+%% @todo Implement server push (RFC9114 6.2.2 Push Streams)
+
+unidi_accept_reserved_type(Config) ->
+	doc("Endpoints must not consider reserved stream types to have "
+		"any meaning. Reserved streams may be terminated cleanly or "
+		"reset with an H3_NO_ERROR or a reserved error code. (RFC9114 6.2.3)"),
+	#{conn := Conn} = do_connect(Config),
+	%% Create a reserved unidirectional stream.
+	{ok, StreamRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(StreamRef, [
+		cow_http3:encode_int(do_reserved_type()),
+		rand:bytes(rand:uniform(4096))
+	]),
+	%% The stream should have been aborted.
+	#{reason := h3_no_error} = do_wait_stream_aborted(StreamRef),
+	ok.
+
+data_frame_can_span_multiple_packets(Config) ->
+	doc("HTTP/3 frames can span multiple packets. (RFC9114 7)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
+	{ok, EncodedHeaders, _EncData, _EncSt} = cow_qpack:encode_field_section([
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":authority">>, <<"localhost">>},
+		{<<":path">>, <<"/echo/read_body">>},
+		{<<"content-length">>, <<"13">>}
+	], 0, cow_qpack:init()),
+	{ok, _} = quicer:send(StreamRef, [
+		<<1>>, %% HEADERS frame.
+		cow_http3:encode_int(iolist_size(EncodedHeaders)),
+		EncodedHeaders,
+		<<0>>, %% DATA frame.
+		cow_http3:encode_int(13),
+		<<"Hello ">>
+	]),
+	timer:sleep(100),
+	{ok, _} = quicer:send(StreamRef, [
+		<<"server!">>
+	], ?QUIC_SEND_FLAG_FIN),
+	#{
+		headers := #{<<":status">> := <<"200">>},
+		body := <<"Hello server!">>
+	} = do_receive_response(StreamRef),
+	ok.
+
+headers_frame_can_span_multiple_packets(Config) ->
+	doc("HTTP/3 frames can span multiple packets. (RFC9114 7)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
+	{ok, EncodedHeaders, _EncData, _EncSt} = cow_qpack:encode_field_section([
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":authority">>, <<"localhost">>},
+		{<<":path">>, <<"/">>},
+		{<<"content-length">>, <<"0">>}
+	], 0, cow_qpack:init()),
+	Half = iolist_size(EncodedHeaders) div 2,
+	<<EncodedHeadersPart1:Half/binary, EncodedHeadersPart2/bits>>
+		= iolist_to_binary(EncodedHeaders),
+	{ok, _} = quicer:send(StreamRef, [
+		<<1>>, %% HEADERS frame.
+		cow_http3:encode_int(iolist_size(EncodedHeaders)),
+		EncodedHeadersPart1
+	]),
+	timer:sleep(100),
+	{ok, _} = quicer:send(StreamRef, [
+		EncodedHeadersPart2
+	]),
+	#{
+		headers := #{<<":status">> := <<"200">>},
+		body := <<"Hello world!">>
+	} = do_receive_response(StreamRef),
+	ok.
+
+%% @todo Implement server push. cancel_push_frame_can_span_multiple_packets(Config) ->
+
+settings_frame_can_span_multiple_packets(Config) ->
+	doc("HTTP/3 frames can span multiple packets. (RFC9114 7)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	<<SettingsPart1:1/binary, SettingsPart2/bits>> = SettingsBin,
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsPart1
+	]),
+	timer:sleep(100),
+	{ok, _} = quicer:send(ControlRef, [
+		SettingsPart2
+	]),
+	%% The connection should remain up.
+	receive
+		{quic, shutdown, Conn, {unknown_quic_status, Code}} ->
+			Reason = cow_http3:code_to_error(Code),
+			error(Reason)
+	after 1000 ->
+		ok
+	end.
+
+goaway_frame_can_span_multiple_packets(Config) ->
+	doc("HTTP/3 frames can span multiple packets. (RFC9114 7)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		<<7>>, cow_http3:encode_int(1) %% GOAWAY part 1.
+	]),
+	timer:sleep(100),
+	{ok, _} = quicer:send(ControlRef, [
+		cow_http3:encode_int(0) %% GOAWAY part 2.
+	]),
+	%% The connection should be closed gracefully.
+	receive
+		{quic, shutdown, Conn, {unknown_quic_status, Code}} ->
+			h3_no_error = cow_http3:code_to_error(Code),
+			ok
+	after 1000 ->
+		error(timeout)
+	end.
+
+max_push_id_frame_can_span_multiple_packets(Config) ->
+	doc("HTTP/3 frames can span multiple packets. (RFC9114 7)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		<<13>>, cow_http3:encode_int(1) %% MAX_PUSH_ID part 1.
+	]),
+	timer:sleep(100),
+	{ok, _} = quicer:send(ControlRef, [
+		cow_http3:encode_int(0) %% MAX_PUSH_ID part 2.
+	]),
+	%% The connection should remain up.
+	receive
+		{quic, shutdown, Conn, {unknown_quic_status, Code}} ->
+			Reason = cow_http3:code_to_error(Code),
+			error(Reason)
+	after 1000 ->
+		ok
+	end.
+
+%% The DATA and SETTINGS frames can be zero-length therefore
+%% they cannot be too short.
+
+headers_frame_too_short(Config) ->
+	doc("Frames that terminate before the end of identified fields "
+		"must be rejected with an H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
+	{ok, _} = quicer:send(StreamRef, [
+		<<1>>, %% HEADERS frame.
+		cow_http3:encode_int(0)
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_frame_error} = do_wait_connection_closed(Conn),
+	ok.
+
+%% @todo Implement server push. cancel_push_frame_too_short(Config) ->
+
+goaway_frame_too_short(Config) ->
+	doc("Frames that terminate before the end of identified fields "
+		"must be rejected with an H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		<<7>>, cow_http3:encode_int(0) %% GOAWAY.
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_frame_error} = do_wait_connection_closed(Conn),
+	ok.
+
+max_push_id_frame_too_short(Config) ->
+	doc("Frames that terminate before the end of identified fields "
+		"must be rejected with an H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		<<13>>, cow_http3:encode_int(0) %% MAX_PUSH_ID.
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_frame_error} = do_wait_connection_closed(Conn),
+	ok.
+
+data_frame_truncated(Config) ->
+	doc("Truncated frames must be rejected with an "
+		"H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
+	{ok, EncodedHeaders, _EncData, _EncSt} = cow_qpack:encode_field_section([
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":authority">>, <<"localhost">>},
+		{<<":path">>, <<"/echo/read_body">>},
+		{<<"content-length">>, <<"13">>}
+	], 0, cow_qpack:init()),
+	{ok, _} = quicer:send(StreamRef, [
+		<<1>>, %% HEADERS frame.
+		cow_http3:encode_int(iolist_size(EncodedHeaders)),
+		EncodedHeaders,
+		<<0>>, %% DATA frame.
+		cow_http3:encode_int(13),
+		<<"Hello ">>
+	], ?QUIC_SEND_FLAG_FIN),
+	%% The connection should have been closed.
+	#{reason := h3_frame_error} = do_wait_connection_closed(Conn),
+	ok.
+
+headers_frame_truncated(Config) ->
+	doc("Truncated frames must be rejected with an "
+		"H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
+	{ok, EncodedHeaders, _EncData, _EncSt} = cow_qpack:encode_field_section([
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":authority">>, <<"localhost">>},
+		{<<":path">>, <<"/">>},
+		{<<"content-length">>, <<"0">>}
+	], 0, cow_qpack:init()),
+	{ok, _} = quicer:send(StreamRef, [
+		<<1>>, %% HEADERS frame.
+		cow_http3:encode_int(iolist_size(EncodedHeaders))
+	], ?QUIC_SEND_FLAG_FIN),
+	%% The connection should have been closed.
+	#{reason := h3_frame_error} = do_wait_connection_closed(Conn),
+	ok.
+
+%% I am not sure how to test truncated CANCEL_PUSH, SETTINGS, GOAWAY
+%% or MAX_PUSH_ID frames, as those are sent on the control stream,
+%% which we cannot terminate.
+
+%% The DATA, HEADERS and SETTINGS frames can be of any length
+%% therefore they cannot be too long per se, even if unwanted
+%% data can be included at the end of the frame's payload.
+
+%% @todo Implement server push. cancel_push_frame_too_long(Config) ->
+
+goaway_frame_too_long(Config) ->
+	doc("Frames that contain additional bytes after the end of identified fields "
+		"must be rejected with an H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		<<7>>, cow_http3:encode_int(3), %% GOAWAY.
+		<<0, 1, 2>>
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_frame_error} = do_wait_connection_closed(Conn),
+	ok.
+
+max_push_id_frame_too_long(Config) ->
+	doc("Frames that contain additional bytes after the end of identified fields "
+		"must be rejected with an H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		<<13>>, cow_http3:encode_int(9), %% MAX_PUSH_ID.
+		<<0, 1, 2, 3, 4, 5, 6, 7, 8>>
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_frame_error} = do_wait_connection_closed(Conn),
+	ok.
+
+%% Streams may terminate abruptly in the middle of frames.
+
+data_frame_rejected_on_control_stream(Config) ->
+	doc("DATA frames received on the control stream must be rejected "
+		"with an H3_FRAME_UNEXPECTED connection error. (RFC9114 7.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		<<0>>, %% DATA frame.
+		cow_http3:encode_int(12),
+		<<"Hello world!">>
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
+	ok.
+
+headers_frame_rejected_on_control_stream(Config) ->
+	doc("HEADERS frames received on the control stream must be rejected "
+		"with an H3_FRAME_UNEXPECTED connection error. (RFC9114 7.2.2)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, EncodedHeaders, _EncData, _EncSt} = cow_qpack:encode_field_section([
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":authority">>, <<"localhost">>},
+		{<<":path">>, <<"/">>},
+		{<<"content-length">>, <<"0">>}
+	], 0, cow_qpack:init()),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		<<1>>, %% HEADERS frame.
+		cow_http3:encode_int(iolist_size(EncodedHeaders)),
+		EncodedHeaders
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
+	ok.
+
+%% @todo Implement server push. (RFC9114 7.2.3. CANCEL_PUSH)
+
+settings_twice(Config) ->
+	doc("Receipt of a second SETTINGS frame on the control stream "
+		"must be rejected with an H3_FRAME_UNEXPECTED connection error. (RFC9114 7.2.4)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		SettingsBin
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
+	ok.
+
+settings_on_bidi_stream(Config) ->
+	doc("Receipt of a SETTINGS frame on a bidirectional stream "
+		"must be rejected with an H3_FRAME_UNEXPECTED connection error. (RFC9114 7.2.4)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, EncodedRequest, _EncData, _EncSt} = cow_qpack:encode_field_section([
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":authority">>, <<"localhost">>},
+		{<<":path">>, <<"/">>},
+		{<<"content-length">>, <<"0">>}
+	], 0, cow_qpack:init()),
+	{ok, _} = quicer:send(StreamRef, [
+		SettingsBin,
+		<<1>>, %% HEADERS frame.
+		cow_http3:encode_int(iolist_size(EncodedRequest)),
+		EncodedRequest
+	], ?QUIC_SEND_FLAG_FIN),
+	%% The connection should have been closed.
+	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
+	ok.
+
+settings_identifier_twice(Config) ->
+	doc("Receipt of a duplicate SETTINGS identifier must be rejected "
+		"with an H3_SETTINGS_ERROR connection error. (RFC9114 7.2.4)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	SettingsPayload = [
+		cow_http3:encode_int(6), cow_http3:encode_int(4096),
+		cow_http3:encode_int(6), cow_http3:encode_int(8192)
+	],
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		<<4>>, %% SETTINGS frame.
+		cow_http3:encode_int(iolist_size(SettingsPayload)),
+		SettingsPayload
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_settings_error} = do_wait_connection_closed(Conn),
+	ok.
+
+settings_ignore_unknown_identifier(Config) ->
+	doc("Unknown SETTINGS identifiers must be ignored (RFC9114 7.2.4)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	SettingsPayload = [
+		cow_http3:encode_int(999), cow_http3:encode_int(4096)
+	],
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		<<4>>, %% SETTINGS frame.
+		cow_http3:encode_int(iolist_size(SettingsPayload)),
+		SettingsPayload
+	]),
+	%% The connection should remain up.
+	receive
+		{quic, shutdown, Conn, {unknown_quic_status, Code}} ->
+			Reason = cow_http3:code_to_error(Code),
+			error(Reason)
+	after 1000 ->
+		ok
+	end.
+
+settings_ignore_reserved_identifier(Config) ->
+	doc("Reserved SETTINGS identifiers must be ignored (RFC9114 7.2.4.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	SettingsPayload = [
+		cow_http3:encode_int(do_reserved_type()), cow_http3:encode_int(4096)
+	],
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		<<4>>, %% SETTINGS frame.
+		cow_http3:encode_int(iolist_size(SettingsPayload)),
+		SettingsPayload
+	]),
+	%% The connection should remain up.
+	receive
+		{quic, shutdown, Conn, {unknown_quic_status, Code}} ->
+			Reason = cow_http3:code_to_error(Code),
+			error(Reason)
+	after 1000 ->
+		ok
+	end.
+
+
+
+
+
+
+
+
+
+
+
+
+
+%% 7.2.4.1. Defined SETTINGS Parameters
+%Endpoints SHOULD include at
+%least one such setting (reserved) in their SETTINGS frame.
+%% -> try sending COW\0 BOY\0 if that fits the encoding and restrictions
+%otherwise something similar
+%% Setting identifiers that were defined in [HTTP/2] where there is no
+%corresponding HTTP/3 setting have also been reserved (Section 11.2.2). These
+%reserved settings MUST NOT be sent, and their receipt MUST be treated as a
+%connection error of type H3_SETTINGS_ERROR.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1487,15 +2044,6 @@ do_guess_int_encoding(Data) ->
 			{3, 62}
 	end.
 
-do_async_stream_shutdown(StreamRef) ->
-	quicer:async_shutdown_stream(StreamRef, ?QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, 0),
-	receive
-		{quic, send_shutdown_complete, StreamRef, true} ->
-			ok
-	after 5000 ->
-		{error, timeout}
-	end.
-
 do_wait_peer_send_shutdown(StreamRef) ->
 	receive
 		{quic, peer_send_shutdown, StreamRef, undefined} ->
@@ -1560,6 +2108,17 @@ do_wait_connection_closed(Conn) ->
 	after 5000 ->
 		{error, timeout}
 	end.
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1633,117 +2192,6 @@ do_wait_connection_closed(Conn) ->
 
 
 
-
-%% 6.2.2. Push Streams
-%% A push stream is indicated by a stream type of 0x01, followed by the push ID
-%of the promise that it fulfills, encoded as a variable-length integer. The
-%remaining data on this stream consists of HTTP/3 frames, as defined in Section
-%7.2, and fulfills a promised server push by zero or more interim HTTP
-%responses followed by a single final HTTP response, as defined in Section 4.1.
-%Server push and push IDs are described in Section 4.6.
-%% Only servers can push; if a server receives a client-initiated push stream,
-%this MUST be treated as a connection error of type H3_STREAM_CREATION_ERROR.
-%% Each push ID MUST only be used once in a push stream header. If a client
-%detects that a push stream header includes a push ID that was used in another
-%push stream header, the client MUST treat this as a connection error of type
-%H3_ID_ERROR.
-
-%% 6.2.3. Reserved Stream Types
-%% Stream types of the format 0x1f * N + 0x21 for non-negative integer values
-%of N are reserved to exercise the requirement that unknown types be ignored.
-%These streams have no semantics, and they can be sent when application-layer
-%padding is desired. They MAY also be sent on connections where no data is
-%currently being transferred. Endpoints MUST NOT consider these streams to have
-%any meaning upon receipt.
-%% The payload and length of the stream are selected in any manner the sending
-%implementation chooses. When sending a reserved stream type, the
-%implementation MAY either terminate the stream cleanly or reset it. When
-%resetting the stream, either the H3_NO_ERROR error code or a reserved error
-%code (Section 8.1) SHOULD be used.
-
-%% 7. HTTP Framing Layer
-%% Note that, unlike QUIC frames, HTTP/3 frames can span multiple packets.
-
-%% 7.1. Frame Layout
-%% Each frame's payload MUST contain exactly the fields identified in its
-%description. A frame payload that contains additional bytes after the
-%identified fields or a frame payload that terminates before the end of the
-%identified fields MUST be treated as a connection error of type
-%H3_FRAME_ERROR. In particular, redundant length encodings MUST be verified to
-%be self-consistent; see Section 10.8.
-%% When a stream terminates cleanly, if the last frame on the stream was
-%truncated, this MUST be treated as a connection error of type H3_FRAME_ERROR.
-%Streams that terminate abruptly may be reset at any point in a frame.
-
-%% 7.2. Frame Definitions
-%% 7.2.1. DATA
-%% DATA frames MUST be associated with an HTTP request or response. If a DATA
-%frame is received on a control stream, the recipient MUST respond with a
-%connection error of type H3_FRAME_UNEXPECTED.
-
-%% 7.2.2. HEADERS
-%% HEADERS frames can only be sent on request streams or push streams. If a
-%HEADERS frame is received on a control stream, the recipient MUST respond with
-%a connection error of type H3_FRAME_UNEXPECTED.
-
-%% 7.2.3. CANCEL_PUSH
-%% When a client sends a CANCEL_PUSH frame, it is indicating that it does not
-%wish to receive the promised resource. The server SHOULD abort sending the
-%resource, but the mechanism to do so depends on the state of the corresponding
-%push stream. If the server has not yet created a push stream, it does not
-%create one. If the push stream is open, the server SHOULD abruptly terminate
-%that stream. If the push stream has already ended, the server MAY still
-%abruptly terminate the stream or MAY take no action.
-%% A server sends a CANCEL_PUSH frame to indicate that it will not be
-%fulfilling a promise that was previously sent. The client cannot expect the
-%corresponding promise to be fulfilled, unless it has already received and
-%processed the promised response. Regardless of whether a push stream has been
-%opened, a server SHOULD send a CANCEL_PUSH frame when it determines that
-%promise will not be fulfilled. If a stream has already been opened, the server
-%can abort sending on the stream with an error code of H3_REQUEST_CANCELLED.
-%% Sending a CANCEL_PUSH frame has no direct effect on the state of existing
-%push streams. A client SHOULD NOT send a CANCEL_PUSH frame when it has already
-%received a corresponding push stream. A push stream could arrive after a
-%client has sent a CANCEL_PUSH frame, because a server might not have processed
-%the CANCEL_PUSH. The client SHOULD abort reading the stream with an error code
-%of H3_REQUEST_CANCELLED.
-%% A CANCEL_PUSH frame is sent on the control stream. Receiving a CANCEL_PUSH
-%frame on a stream other than the control stream MUST be treated as a
-%connection error of type H3_FRAME_UNEXPECTED.
-%% If a CANCEL_PUSH frame is received that references a push ID greater than
-%currently allowed on the connection, this MUST be treated as a connection
-%error of type H3_ID_ERROR.
-%% If the client receives a CANCEL_PUSH frame, that frame might identify a push
-%ID that has not yet been mentioned by a PUSH_PROMISE frame due to reordering.
-%If a server receives a CANCEL_PUSH frame for a push ID that has not yet been
-%mentioned by a PUSH_PROMISE frame, this MUST be treated as a connection error
-%of type H3_ID_ERROR.
-
-%% 7.2.4. SETTINGS
-%% A SETTINGS frame MUST be sent as the first frame of each control stream (see
-%Section 6.2.1) by each peer, and it MUST NOT be sent subsequently. If an
-%endpoint receives a second SETTINGS frame on the control stream, the endpoint
-%MUST respond with a connection error of type H3_FRAME_UNEXPECTED.
-%% SETTINGS frames MUST NOT be sent on any stream other than the control
-%stream. If an endpoint receives a SETTINGS frame on a different stream, the
-%endpoint MUST respond with a connection error of type H3_FRAME_UNEXPECTED.
-%% The same setting identifier MUST NOT occur more than once in the SETTINGS
-%frame. A receiver MAY treat the presence of duplicate setting identifiers as a
-%connection error of type H3_SETTINGS_ERROR.
-%% An implementation MUST ignore any parameter with an identifier it does not understand.
-
-%% 7.2.4.1. Defined SETTINGS Parameters
-%% Setting identifiers of the format 0x1f * N + 0x21 for non-negative integer
-%values of N are reserved to exercise the requirement that unknown identifiers
-%be ignored. Such settings have no defined meaning. Endpoints SHOULD include at
-%least one such setting in their SETTINGS frame. Endpoints MUST NOT consider
-%such settings to have any meaning upon receipt.
-%% -> try sending COW\0 BOY\0 if that fits the encoding and restrictions
-%otherwise something similar
-%% Setting identifiers that were defined in [HTTP/2] where there is no
-%corresponding HTTP/3 setting have also been reserved (Section 11.2.2). These
-%reserved settings MUST NOT be sent, and their receipt MUST be treated as a
-%connection error of type H3_SETTINGS_ERROR.
 
 %% 7.2.4.2. Initialization
 %% An HTTP implementation MUST NOT send frames or requests that would be
