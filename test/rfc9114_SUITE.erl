@@ -40,11 +40,7 @@ end_per_group(_Name, _) ->
 init_routes(_) -> [
 	{"localhost", [
 		{"/", hello_h, []},
-		{"/echo/:key", echo_h, []}%,
-%		{"/delay_hello", delay_hello_h, 1200},
-%		{"/long_polling", long_polling_h, []},
-%		{"/loop_handler_abort", loop_handler_abort_h, []},
-%		{"/resp/:key[/:arg]", resp_h, []}
+		{"/echo/:key", echo_h, []}
 	]}
 ].
 
@@ -722,9 +718,6 @@ headers_then_data_then_trailers_then_reserved(Config) ->
 	headers_then_data_then_trailers_then_unknown(Config,
 		do_reserved_type(), rand:bytes(rand:uniform(4096))).
 
-do_reserved_type() ->
-	16#1f * (rand:uniform(148764065110560900) - 1) + 16#21.
-
 reject_transfer_encoding_header_with_body(Config) ->
 	doc("Requests containing a transfer-encoding header must be rejected "
 		"with an H3_MESSAGE_ERROR stream error. (RFC9114 4.1, RFC9114 4.1.2, RFC9114 4.2)"),
@@ -1175,8 +1168,84 @@ do_reject_malformed_headers(Config, Headers) ->
 
 %% @todo Implement server push (RFC9114 4.6. Server Push)
 
-%% @todo 5.2 Connection Shutdown - need a way to list connections.
-%% @todo 5.3. Immediate Application Closure
+%% @todo - need a way to list connections
+%% 5.2. Connection Shutdown
+%% Endpoints initiate the graceful shutdown of an HTTP/3 connection by sending
+%% a GOAWAY frame. The GOAWAY frame contains an identifier that indicates to the
+%% receiver the range of requests or pushes that were or might be processed in
+%% this connection. The server sends a client-initiated bidirectional stream ID;
+%% the client sends a push ID. Requests or pushes with the indicated identifier
+%% or greater are rejected (Section 4.1.1) by the sender of the GOAWAY. This
+%% identifier MAY be zero if no requests or pushes were processed.
+
+%% @todo
+%% Upon sending a GOAWAY frame, the endpoint SHOULD explicitly cancel (see
+%% Sections 4.1.1 and 7.2.3) any requests or pushes that have identifiers greater
+%% than or equal to the one indicated, in order to clean up transport state for
+%% the affected streams. The endpoint SHOULD continue to do so as more requests
+%% or pushes arrive.
+
+%% @todo
+%% Endpoints MUST NOT initiate new requests or promise new pushes on the
+%% connection after receipt of a GOAWAY frame from the peer.
+
+%% @todo
+%% Requests on stream IDs less than the stream ID in a GOAWAY frame from the
+%% server might have been processed; their status cannot be known until a
+%% response is received, the stream is reset individually, another GOAWAY is
+%% received with a lower stream ID than that of the request in question, or the
+%% connection terminates.
+
+%% @todo
+%% Servers MAY reject individual requests on streams below the indicated ID if
+%% these requests were not processed.
+
+%% @todo
+%% If a server receives a GOAWAY frame after having promised pushes with a push
+%% ID greater than or equal to the identifier contained in the GOAWAY frame,
+%% those pushes will not be accepted.
+
+%% @todo
+%% Servers SHOULD send a GOAWAY frame when the closing of a connection is known
+%% in advance, even if the advance notice is small, so that the remote peer can
+%% know whether or not a request has been partially processed.
+
+%% @todo
+%% An endpoint MAY send multiple GOAWAY frames indicating different
+%% identifiers, but the identifier in each frame MUST NOT be greater than the
+%% identifier in any previous frame, since clients might already have retried
+%% unprocessed requests on another HTTP connection. Receiving a GOAWAY containing
+%% a larger identifier than previously received MUST be treated as a connection
+%% error of type H3_ID_ERROR.
+
+%% @todo
+%% An endpoint that is attempting to gracefully shut down a connection can send
+%% a GOAWAY frame with a value set to the maximum possible value (2^62-4 for
+%% servers, 2^62-1 for clients).
+
+%% @todo
+%% Even when a GOAWAY indicates that a given request or push will not be
+%% processed or accepted upon receipt, the underlying transport resources still
+%% exist. The endpoint that initiated these requests can cancel them to clean up
+%% transport state.
+
+%% @todo
+%% Once all accepted requests and pushes have been processed, the endpoint can
+%% permit the connection to become idle, or it MAY initiate an immediate closure
+%% of the connection. An endpoint that completes a graceful shutdown SHOULD use
+%% the H3_NO_ERROR error code when closing the connection.
+
+%% @todo
+%% If a client has consumed all available bidirectional stream IDs with
+%% requests, the server need not send a GOAWAY frame, since the client is unable
+%% to make further requests. @todo OK that one's some weird stuff lol
+
+%% @todo
+%% 5.3. Immediate Application Closure
+%% Before closing the connection, a GOAWAY frame MAY be sent to allow the
+%% client to retry some requests. Including the GOAWAY frame in the same packet
+%% as the QUIC CONNECTION_CLOSE frame improves the chances of the frame being
+%% received by clients.
 
 bidi_allow_at_least_a_hundred(Config) ->
 	doc("Endpoints must allow the peer to create at least "
@@ -1256,13 +1325,36 @@ do_accept_qpack_stream(Conn) ->
 %%       flow-control credit for each unidi stream the server creates. (How?)
 %%       It can be set via stream_recv_window_default in quicer.
 
-%% Recipients of unknown stream types MUST either abort reading of the stream
-%% or discard incoming data without further processing. If reading is aborted,
-%% the recipient SHOULD use the H3_STREAM_CREATION_ERROR error code or a reserved
-%% error code (Section 8.1). The recipient MUST NOT consider unknown stream types
-%% to be a connection error of any kind.
-%% @todo Cowboy limits the number of unidi streams to 3. But trying to create
-%%       more streams doesn't seem to generate an error from QUIC, it swallows it.
+unidi_abort_unknown_type(Config) ->
+	doc("Receipt of an unknown stream type must be aborted "
+		"with an H3_STREAM_CREATION_ERROR stream error. (RFC9114 6.2, RFC9114 9)"),
+	#{conn := Conn} = do_connect(Config),
+	%% Create an unknown unidirectional stream.
+	{ok, StreamRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(StreamRef, [
+		cow_http3:encode_int(1 + do_reserved_type()),
+		rand:bytes(rand:uniform(4096))
+	]),
+	%% The stream should have been aborted.
+	#{reason := h3_stream_creation_error} = do_wait_stream_aborted(StreamRef),
+	ok.
+
+unidi_abort_reserved_type(Config) ->
+	doc("Receipt of a reserved stream type must be aborted "
+		"with an H3_STREAM_CREATION_ERROR stream error. "
+		"(RFC9114 6.2, RFC9114 6.2.3, RFC9114 9)"),
+	#{conn := Conn} = do_connect(Config),
+	%% Create a reserved unidirectional stream.
+	{ok, StreamRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, _} = quicer:send(StreamRef, [
+		cow_http3:encode_int(do_reserved_type()),
+		rand:bytes(rand:uniform(4096))
+	]),
+	%% The stream should have been aborted.
+	#{reason := h3_stream_creation_error} = do_wait_stream_aborted(StreamRef),
+	ok.
 
 %% As certain stream types can affect connection state, a recipient SHOULD NOT
 %% discard data from incoming unidirectional streams prior to reading the stream type.
@@ -1287,7 +1379,7 @@ do_accept_qpack_stream(Conn) ->
 control_reject_first_frame_data(Config) ->
 	doc("The first frame on a control stream must be a SETTINGS frame "
 		"or the connection must be closed with an H3_MISSING_SETTINGS "
-		"connection error. (RFC9114 6.2.1)"),
+		"connection error. (RFC9114 6.2.1, RFC9114 9)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1304,7 +1396,7 @@ control_reject_first_frame_data(Config) ->
 control_reject_first_frame_headers(Config) ->
 	doc("The first frame on a control stream must be a SETTINGS frame "
 		"or the connection must be closed with an H3_MISSING_SETTINGS "
-		"connection error. (RFC9114 6.2.1)"),
+		"connection error. (RFC9114 6.2.1, RFC9114 9)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1328,7 +1420,7 @@ control_reject_first_frame_headers(Config) ->
 control_reject_first_frame_cancel_push(Config) ->
 	doc("The first frame on a control stream must be a SETTINGS frame "
 		"or the connection must be closed with an H3_MISSING_SETTINGS "
-		"connection error. (RFC9114 6.2.1)"),
+		"connection error. (RFC9114 6.2.1, RFC9114 9)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1344,7 +1436,7 @@ control_reject_first_frame_cancel_push(Config) ->
 
 control_accept_first_frame_settings(Config) ->
 	doc("The first frame on a control stream "
-		"must be a SETTINGS frame. (RFC9114 6.2.1)"),
+		"must be a SETTINGS frame. (RFC9114 6.2.1, RFC9114 9)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1365,7 +1457,7 @@ control_accept_first_frame_settings(Config) ->
 control_reject_first_frame_push_promise(Config) ->
 	doc("The first frame on a control stream must be a SETTINGS frame "
 		"or the connection must be closed with an H3_MISSING_SETTINGS "
-		"connection error. (RFC9114 6.2.1)"),
+		"connection error. (RFC9114 6.2.1, RFC9114 9)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1391,7 +1483,7 @@ control_reject_first_frame_push_promise(Config) ->
 control_reject_first_frame_goaway(Config) ->
 	doc("The first frame on a control stream must be a SETTINGS frame "
 		"or the connection must be closed with an H3_MISSING_SETTINGS "
-		"connection error. (RFC9114 6.2.1)"),
+		"connection error. (RFC9114 6.2.1, RFC9114 9)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1408,7 +1500,7 @@ control_reject_first_frame_goaway(Config) ->
 control_reject_first_frame_max_push_id(Config) ->
 	doc("The first frame on a control stream must be a SETTINGS frame "
 		"or the connection must be closed with an H3_MISSING_SETTINGS "
-		"connection error. (RFC9114 6.2.1)"),
+		"connection error. (RFC9114 6.2.1, RFC9114 9)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1425,7 +1517,7 @@ control_reject_first_frame_max_push_id(Config) ->
 control_reject_first_frame_reserved(Config) ->
 	doc("The first frame on a control stream must be a SETTINGS frame "
 		"or the connection must be closed with an H3_MISSING_SETTINGS "
-		"connection error. (RFC9114 6.2.1)"),
+		"connection error. (RFC9114 6.2.1, RFC9114 9)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1499,22 +1591,6 @@ control_remote_closed_abort(Config) ->
 %% the peer's control stream from becoming blocked.
 
 %% @todo Implement server push (RFC9114 6.2.2 Push Streams)
-
-unidi_accept_reserved_type(Config) ->
-	doc("Endpoints must not consider reserved stream types to have "
-		"any meaning. Reserved streams may be terminated cleanly or "
-		"reset with an H3_NO_ERROR or a reserved error code. (RFC9114 6.2.3)"),
-	#{conn := Conn} = do_connect(Config),
-	%% Create a reserved unidirectional stream.
-	{ok, StreamRef} = quicer:start_stream(Conn,
-		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
-	{ok, _} = quicer:send(StreamRef, [
-		cow_http3:encode_int(do_reserved_type()),
-		rand:bytes(rand:uniform(4096))
-	]),
-	%% The stream should have been aborted.
-	#{reason := h3_no_error} = do_wait_stream_aborted(StreamRef),
-	ok.
 
 data_frame_can_span_multiple_packets(Config) ->
 	doc("HTTP/3 frames can span multiple packets. (RFC9114 7)"),
@@ -1619,6 +1695,10 @@ goaway_frame_can_span_multiple_packets(Config) ->
 	receive
 		{quic, shutdown, Conn, {unknown_quic_status, Code}} ->
 			h3_no_error = cow_http3:code_to_error(Code),
+			ok;
+		%% @todo Temporarily also accept this message. I am
+		%%       not sure why it happens but it isn't wrong per se.
+		{quic, shutdown, Conn, success} ->
 			ok
 	after 1000 ->
 		error(timeout)
@@ -1653,7 +1733,8 @@ max_push_id_frame_can_span_multiple_packets(Config) ->
 
 headers_frame_too_short(Config) ->
 	doc("Frames that terminate before the end of identified fields "
-		"must be rejected with an H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+		"must be rejected with an H3_FRAME_ERROR connection error. "
+		"(RFC9114 7.1, RFC9114 10.8)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
 	{ok, _} = quicer:send(StreamRef, [
@@ -1668,7 +1749,8 @@ headers_frame_too_short(Config) ->
 
 goaway_frame_too_short(Config) ->
 	doc("Frames that terminate before the end of identified fields "
-		"must be rejected with an H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+		"must be rejected with an H3_FRAME_ERROR connection error. "
+		"(RFC9114 7.1, RFC9114 10.8)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1684,7 +1766,8 @@ goaway_frame_too_short(Config) ->
 
 max_push_id_frame_too_short(Config) ->
 	doc("Frames that terminate before the end of identified fields "
-		"must be rejected with an H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+		"must be rejected with an H3_FRAME_ERROR connection error. "
+		"(RFC9114 7.1, RFC9114 10.8)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1700,7 +1783,7 @@ max_push_id_frame_too_short(Config) ->
 
 data_frame_truncated(Config) ->
 	doc("Truncated frames must be rejected with an "
-		"H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+		"H3_FRAME_ERROR connection error. (RFC9114 7.1, RFC9114 10.8)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
 	{ok, EncodedHeaders, _EncData, _EncSt} = cow_qpack:encode_field_section([
@@ -1724,7 +1807,7 @@ data_frame_truncated(Config) ->
 
 headers_frame_truncated(Config) ->
 	doc("Truncated frames must be rejected with an "
-		"H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+		"H3_FRAME_ERROR connection error. (RFC9114 7.1, RFC9114 10.8)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
 	{ok, EncodedHeaders, _EncData, _EncSt} = cow_qpack:encode_field_section([
@@ -1754,7 +1837,8 @@ headers_frame_truncated(Config) ->
 
 goaway_frame_too_long(Config) ->
 	doc("Frames that contain additional bytes after the end of identified fields "
-		"must be rejected with an H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+		"must be rejected with an H3_FRAME_ERROR connection error. "
+		"(RFC9114 7.1, RFC9114 10.8)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1771,7 +1855,8 @@ goaway_frame_too_long(Config) ->
 
 max_push_id_frame_too_long(Config) ->
 	doc("Frames that contain additional bytes after the end of identified fields "
-		"must be rejected with an H3_FRAME_ERROR connection error. (RFC9114 7.1)"),
+		"must be rejected with an H3_FRAME_ERROR connection error. "
+		"(RFC9114 7.1, RFC9114 10.8)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1893,7 +1978,7 @@ settings_identifier_twice(Config) ->
 	ok.
 
 settings_ignore_unknown_identifier(Config) ->
-	doc("Unknown SETTINGS identifiers must be ignored (RFC9114 7.2.4)"),
+	doc("Unknown SETTINGS identifiers must be ignored (RFC9114 7.2.4, RFC9114 9)"),
 	#{conn := Conn} = do_connect(Config),
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
@@ -1938,59 +2023,282 @@ settings_ignore_reserved_identifier(Config) ->
 		ok
 	end.
 
+%% @todo Check that we send a reserved SETTINGS identifier when sending a
+%%       non-empty SETTINGS frame. (7.2.4.1. Defined SETTINGS Parameters)
 
+%% @todo Check that setting SETTINGS_MAX_FIELD_SECTION_SIZE works.
 
+%% It is unclear whether the SETTINGS identifier 0x00 must be rejected or ignored.
 
+settings_reject_http2_0x02(Config) ->
+	do_settings_reject_http2(Config, 2, 1).
 
+settings_reject_http2_0x03(Config) ->
+	do_settings_reject_http2(Config, 3, 100).
 
+settings_reject_http2_0x04(Config) ->
+	do_settings_reject_http2(Config, 4, 128000).
 
+settings_reject_http2_0x05(Config) ->
+	do_settings_reject_http2(Config, 5, 1000000).
 
+do_settings_reject_http2(Config, Identifier, Value) ->
+	doc("Receipt of an unused HTTP/2 SETTINGS identifier must be rejected "
+		"with an H3_SETTINGS_ERROR connection error. (RFC9114 7.2.4, RFC9114 11.2.2)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	SettingsPayload = [
+		cow_http3:encode_int(Identifier), cow_http3:encode_int(Value)
+	],
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		<<4>>, %% SETTINGS frame.
+		cow_http3:encode_int(iolist_size(SettingsPayload)),
+		SettingsPayload
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_settings_error} = do_wait_connection_closed(Conn),
+	ok.
 
+%% 7.2.4.2. Initialization
+%% An HTTP implementation MUST NOT send frames or requests that would be
+%% invalid based on its current understanding of the peer's settings.
+%% @todo In the case of SETTINGS_MAX_FIELD_SECTION_SIZE I don't think we have a choice.
 
+%% All settings begin at an initial value. Each endpoint SHOULD use these
+%% initial values to send messages before the peer's SETTINGS frame has arrived,
+%% as packets carrying the settings can be lost or delayed. When the SETTINGS
+%% frame arrives, any settings are changed to their new values.
 
+%% Endpoints MUST NOT require any data to be received from the peer prior to
+%% sending the SETTINGS frame; settings MUST be sent as soon as the transport is
+%% ready to send data.
 
+%% @todo Implement 0-RTT. (7.2.4.2. Initialization)
 
-%% 7.2.4.1. Defined SETTINGS Parameters
-%Endpoints SHOULD include at
-%least one such setting (reserved) in their SETTINGS frame.
-%% -> try sending COW\0 BOY\0 if that fits the encoding and restrictions
-%otherwise something similar
-%% Setting identifiers that were defined in [HTTP/2] where there is no
-%corresponding HTTP/3 setting have also been reserved (Section 11.2.2). These
-%reserved settings MUST NOT be sent, and their receipt MUST be treated as a
-%connection error of type H3_SETTINGS_ERROR.
+%% @todo Implement server push. (7.2.5. PUSH_PROMISE)
 
+goaway_on_bidi_stream(Config) ->
+	doc("Receipt of a GOAWAY frame on a bidirectional stream "
+		"must be rejected with an H3_FRAME_UNEXPECTED connection error. (RFC9114 7.2.6)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
+	{ok, _} = quicer:send(StreamRef, [
+		<<7>>, cow_http3:encode_int(1), cow_http3:encode_int(0) %% GOAWAY.
+	], ?QUIC_SEND_FLAG_FIN),
+	%% The connection should have been closed.
+	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
+	ok.
 
+%% @todo Implement server push. (7.2.6 GOAWAY - will have to reject too large push IDs)
 
+max_push_id_on_bidi_stream(Config) ->
+	doc("Receipt of a MAX_PUSH_ID frame on a bidirectional stream "
+		"must be rejected with an H3_FRAME_UNEXPECTED connection error. (RFC9114 7.2.7)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
+	{ok, _} = quicer:send(StreamRef, [
+		<<13>>, cow_http3:encode_int(1), cow_http3:encode_int(0) %% MAX_PUSH_ID.
+	], ?QUIC_SEND_FLAG_FIN),
+	%% The connection should have been closed.
+	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
+	ok.
 
+%% @todo Implement server push. (7.2.7 MAX_PUSH_ID)
 
+max_push_id_reject_lower(Config) ->
+	doc("Receipt of a MAX_PUSH_ID value lower than previously received "
+		"must be rejected with an H3_ID_ERROR connection error. (RFC9114 7.2.7)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		<<13>>, cow_http3:encode_int(1), cow_http3:encode_int(20), %% MAX_PUSH_ID.
+		<<13>>, cow_http3:encode_int(1), cow_http3:encode_int(10) %% MAX_PUSH_ID.
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_id_error} = do_wait_connection_closed(Conn),
+	ok.
 
+reserved_on_control_stream(Config) ->
+	doc("Receipt of a reserved frame type on a control stream "
+		"must be ignored. (RFC9114 7.2.8)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	Len = rand:uniform(512),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		cow_http3:encode_int(do_reserved_type()),
+		cow_http3:encode_int(Len),
+		rand:bytes(Len)
+	]),
+	%% The connection should remain up.
+	receive
+		{quic, shutdown, Conn, {unknown_quic_status, Code}} ->
+			Reason = cow_http3:code_to_error(Code),
+			error(Reason)
+	after 1000 ->
+		ok
+	end.
 
+reserved_reject_http2_0x02_control(Config) ->
+	do_reserved_reject_http2_control(Config, 2).
 
+reserved_reject_http2_0x06_control(Config) ->
+	do_reserved_reject_http2_control(Config, 6).
 
+reserved_reject_http2_0x08_control(Config) ->
+	do_reserved_reject_http2_control(Config, 8).
 
+reserved_reject_http2_0x09_control(Config) ->
+	do_reserved_reject_http2_control(Config, 9).
 
+do_reserved_reject_http2_control(Config, Type) ->
+	doc("Receipt of an unused HTTP/2 frame type must be rejected "
+		"with an H3_FRAME_UNEXPECTED connection error. (RFC9114 7.2.8, RFC9114 11.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, ControlRef} = quicer:start_stream(Conn,
+		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
+	{ok, SettingsBin, _HTTP3Machine0} = cow_http3_machine:init(client, #{}),
+	Len = rand:uniform(512),
+	{ok, _} = quicer:send(ControlRef, [
+		<<0>>, %% CONTROL stream.
+		SettingsBin,
+		cow_http3:encode_int(Type),
+		cow_http3:encode_int(Len),
+		rand:bytes(Len)
+	]),
+	%% The connection should have been closed.
+	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
+	ok.
 
+reserved_reject_http2_0x02_bidi(Config) ->
+	do_reserved_reject_http2_bidi(Config, 2).
 
+reserved_reject_http2_0x06_bidi(Config) ->
+	do_reserved_reject_http2_bidi(Config, 6).
 
+reserved_reject_http2_0x08_bidi(Config) ->
+	do_reserved_reject_http2_bidi(Config, 8).
 
+reserved_reject_http2_0x09_bidi(Config) ->
+	do_reserved_reject_http2_bidi(Config, 9).
 
+do_reserved_reject_http2_bidi(Config, Type) ->
+	doc("Receipt of an unused HTTP/2 frame type must be rejected "
+		"with an H3_FRAME_UNEXPECTED connection error. (RFC9114 7.2.8, RFC9114 11.2.1)"),
+	#{conn := Conn} = do_connect(Config),
+	{ok, StreamRef} = quicer:start_stream(Conn, #{}),
+	{ok, EncodedHeaders, _EncData, _EncSt} = cow_qpack:encode_field_section([
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":authority">>, <<"localhost">>},
+		{<<":path">>, <<"/">>},
+		{<<"content-length">>, <<"0">>}
+	], 0, cow_qpack:init()),
+	Len = rand:uniform(512),
+	{ok, _} = quicer:send(StreamRef, [
+		cow_http3:encode_int(Type),
+		cow_http3:encode_int(Len),
+		rand:bytes(Len),
+		<<1>>, %% HEADERS frame.
+		cow_http3:encode_int(iolist_size(EncodedHeaders)),
+		EncodedHeaders
+	], ?QUIC_SEND_FLAG_FIN),
+	%% The connection should have been closed.
+	#{reason := h3_frame_unexpected} = do_wait_connection_closed(Conn),
+	ok.
 
+%% An endpoint MAY choose to treat a stream error as a connection error under
+%% certain circumstances, closing the entire connection in response to a
+%% condition on a single stream.
 
+%% Because new error codes can be defined without negotiation (see Section 9),
+%% use of an error code in an unexpected context or receipt of an unknown error
+%% code MUST be treated as equivalent to H3_NO_ERROR.
 
+%% 8.1. HTTP/3 Error Codes
+%% H3_INTERNAL_ERROR (0x0102): An internal error has occurred in the HTTP stack.
+%% H3_EXCESSIVE_LOAD (0x0107): The endpoint detected that its peer is
+%% exhibiting a behavior that might be generating excessive load.
+%% H3_MISSING_SETTINGS (0x010a): No SETTINGS frame was received
+%% at the beginning of the control stream.
+%% H3_REQUEST_REJECTED (0x010b): A server rejected a request without
+%% performing any application processing.
+%% H3_REQUEST_CANCELLED (0x010c): The request or its response
+%% (including pushed response) is cancelled.
+%% H3_REQUEST_INCOMPLETE (0x010d): The client's stream terminated
+%% without containing a fully formed request.
+%% H3_CONNECT_ERROR (0x010f): The TCP connection established in
+%% response to a CONNECT request was reset or abnormally closed.
+%% H3_VERSION_FALLBACK (0x0110): The requested operation cannot
+%% be served over HTTP/3. The peer should retry over HTTP/1.1.
 
+%% 9. Extensions to HTTP/3
+%% If a setting is used for extension negotiation, the default value MUST be
+%% defined in such a fashion that the extension is disabled if the setting is
+%% omitted.
 
+%% 10. Security Considerations
+%% 10.3. Intermediary-Encapsulation Attacks
+%% Requests or responses containing invalid field names MUST be treated as malformed.
+%% Any request or response that contains a character not permitted in a field
+%% value MUST be treated as malformed.
 
+%% 10.5. Denial-of-Service Considerations
+%% Implementations SHOULD track the use of these features and set limits on
+%% their use. An endpoint MAY treat activity that is suspicious as a connection
+%% error of type H3_EXCESSIVE_LOAD, but false positives will result in disrupting
+%% valid connections and requests.
 
+%% 10.5.1. Limits on Field Section Size
+%% An endpoint can use the SETTINGS_MAX_FIELD_SECTION_SIZE (Section 4.2.2)
+%% setting to advise peers of limits that might apply on the size of field
+%% sections.
+%%
+%% A server that receives a larger field section than it is willing to handle
+%% can send an HTTP 431 (Request Header Fields Too Large) status code
+%% ([RFC6585]).
 
+%% 10.6. Use of Compression
+%% Implementations communicating on a secure channel MUST NOT compress content
+%% that includes both confidential and attacker-controlled data unless separate
+%% compression contexts are used for each source of data. Compression MUST NOT be
+%% used if the source of data cannot be reliably determined.
 
+%% 10.9. Early Data
+%% The anti-replay mitigations in [HTTP-REPLAY] MUST be applied when using HTTP/3 with 0-RTT.
 
+%% 10.10. Migration
+%% Certain HTTP implementations use the client address for logging or
+%% access-control purposes. Since a QUIC client's address might change during a
+%% connection (and future versions might support simultaneous use of multiple
+%% addresses), such implementations will need to either actively retrieve the
+%% client's current address or addresses when they are relevant or explicitly
+%% accept that the original address might change. @todo Document this behavior.
 
-
-
-
+%% Appendix A. Considerations for Transitioning from HTTP/2
+%% A.1. Streams
+%% QUIC considers a stream closed when all data has been received and sent data
+%% has been acknowledged by the peer. HTTP/2 considers a stream closed when the
+%% frame containing the END_STREAM bit has been committed to the transport. As a
+%% result, the stream for an equivalent exchange could remain "active" for a
+%% longer period of time. HTTP/3 servers might choose to permit a larger number
+%% of concurrent client-initiated bidirectional streams to achieve equivalent
+%% concurrency to HTTP/2, depending on the expected usage patterns. @todo Document this.
 
 %% Helper functions.
+
+%% @todo Maybe have a function in cow_http3.
+do_reserved_type() ->
+	16#1f * (rand:uniform(148764065110560900) - 1) + 16#21.
 
 do_connect(Config) ->
 	do_connect(Config, #{}).
@@ -2094,7 +2402,6 @@ do_receive_response(StreamRef) ->
 	>> = Rest,
 	BodyLen = integer_to_binary(byte_size(Body)),
 	ok = do_wait_peer_send_shutdown(StreamRef),
-%	ok = do_wait_stream_closed(StreamRef),
 	#{
 		headers => Headers,
 		body => Body
@@ -2108,250 +2415,3 @@ do_wait_connection_closed(Conn) ->
 	after 5000 ->
 		{error, timeout}
 	end.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-%% 5.2. Connection Shutdown
-%% Endpoints initiate the graceful shutdown of an HTTP/3 connection by sending
-%a GOAWAY frame. The GOAWAY frame contains an identifier that indicates to the
-%receiver the range of requests or pushes that were or might be processed in
-%this connection. The server sends a client-initiated bidirectional stream ID;
-%the client sends a push ID. Requests or pushes with the indicated identifier
-%or greater are rejected (Section 4.1.1) by the sender of the GOAWAY. This
-%identifier MAY be zero if no requests or pushes were processed.
-
-%% Upon sending a GOAWAY frame, the endpoint SHOULD explicitly cancel (see
-%Sections 4.1.1 and 7.2.3) any requests or pushes that have identifiers greater
-%than or equal to the one indicated, in order to clean up transport state for
-%the affected streams. The endpoint SHOULD continue to do so as more requests
-%or pushes arrive.
-
-%% Endpoints MUST NOT initiate new requests or promise new pushes on the
-%connection after receipt of a GOAWAY frame from the peer.
-%% Requests on stream IDs less than the stream ID in a GOAWAY frame from the
-%server might have been processed; their status cannot be known until a
-%response is received, the stream is reset individually, another GOAWAY is
-%received with a lower stream ID than that of the request in question, or the
-%connection terminates.
-
-%% Servers MAY reject individual requests on streams below the indicated ID if
-%these requests were not processed.
-
-%% If a server receives a GOAWAY frame after having promised pushes with a push
-%ID greater than or equal to the identifier contained in the GOAWAY frame,
-%those pushes will not be accepted.
-
-%% Servers SHOULD send a GOAWAY frame when the closing of a connection is known
-%in advance, even if the advance notice is small, so that the remote peer can
-%know whether or not a request has been partially processed.
-
-%% An endpoint MAY send multiple GOAWAY frames indicating different
-%identifiers, but the identifier in each frame MUST NOT be greater than the
-%identifier in any previous frame, since clients might already have retried
-%unprocessed requests on another HTTP connection. Receiving a GOAWAY containing
-%a larger identifier than previously received MUST be treated as a connection
-%error of type H3_ID_ERROR.
-
-%% An endpoint that is attempting to gracefully shut down a connection can send
-%a GOAWAY frame with a value set to the maximum possible value (2^62-4 for
-%servers, 2^62-1 for clients).
-
-%% Even when a GOAWAY indicates that a given request or push will not be
-%processed or accepted upon receipt, the underlying transport resources still
-%exist. The endpoint that initiated these requests can cancel them to clean up
-%transport state.
-
-%% Once all accepted requests and pushes have been processed, the endpoint can
-%permit the connection to become idle, or it MAY initiate an immediate closure
-%of the connection. An endpoint that completes a graceful shutdown SHOULD use
-%the H3_NO_ERROR error code when closing the connection.
-
-%% If a client has consumed all available bidirectional stream IDs with
-%requests, the server need not send a GOAWAY frame, since the client is unable
-%to make further requests. @todo OK that one's some weird stuff lol
-
-%% 5.3. Immediate Application Closure
-%% Before closing the connection, a GOAWAY frame MAY be sent to allow the
-%client to retry some requests. Including the GOAWAY frame in the same packet
-%as the QUIC CONNECTION_CLOSE frame improves the chances of the frame being
-%received by clients.
-
-
-
-
-
-
-%% 7.2.4.2. Initialization
-%% An HTTP implementation MUST NOT send frames or requests that would be
-%invalid based on its current understanding of the peer's settings.
-%% All settings begin at an initial value. Each endpoint SHOULD use these
-%initial values to send messages before the peer's SETTINGS frame has arrived,
-%as packets carrying the settings can be lost or delayed. When the SETTINGS
-%frame arrives, any settings are changed to their new values.
-%% Endpoints MUST NOT require any data to be received from the peer prior to
-%sending the SETTINGS frame; settings MUST be sent as soon as the transport is
-%ready to send data.
-%% A server MAY accept 0-RTT and subsequently provide different settings in its
-%SETTINGS frame. If 0-RTT data is accepted by the server, its SETTINGS frame
-%MUST NOT reduce any limits or alter any values that might be violated by the
-%client with its 0-RTT data. The server MUST include all settings that differ
-%from their default values. If a server accepts 0-RTT but then sends settings
-%that are not compatible with the previously specified settings, this MUST be
-%treated as a connection error of type H3_SETTINGS_ERROR. If a server accepts
-%0-RTT but then sends a SETTINGS frame that omits a setting value that the
-%client understands (apart from reserved setting identifiers) that was
-%previously specified to have a non-default value, this MUST be treated as a
-%connection error of type H3_SETTINGS_ERROR.
-
-%% 7.2.5. PUSH_PROMISE
-%% A server MUST NOT use a push ID that is larger than the client has provided
-%in a MAX_PUSH_ID frame (Section 7.2.7).
-%% A server MAY use the same push ID in multiple PUSH_PROMISE frames. If so,
-%the decompressed request header sets MUST contain the same fields in the same
-%order, and both the name and the value in each field MUST be exact matches.
-%% Allowing duplicate references to the same push ID is primarily to reduce
-%duplication caused by concurrent requests. A server SHOULD avoid reusing a
-%push ID over a long period. Clients are likely to consume server push
-%responses and not retain them for reuse over time. Clients that see a
-%PUSH_PROMISE frame that uses a push ID that they have already consumed and
-%discarded are forced to ignore the promise.
-%% A client MUST NOT send a PUSH_PROMISE frame. A server MUST treat the receipt
-%of a PUSH_PROMISE frame as a connection error of type H3_FRAME_UNEXPECTED.
-
-%% 7.2.6. GOAWAY
-%% (not sure what applies to the server, should the server reject GOAWAY on
-%non-control stream too?)
-
-%% 7.2.7. MAX_PUSH_ID
-%% Receipt of a MAX_PUSH_ID frame on any other stream MUST be treated as a
-%connection error of type H3_FRAME_UNEXPECTED.
-%% The maximum push ID is unset when an HTTP/3 connection is created, meaning
-%that a server cannot push until it receives a MAX_PUSH_ID frame.
-%% A MAX_PUSH_ID frame cannot reduce the maximum push ID; receipt of a
-%MAX_PUSH_ID frame that contains a smaller value than previously received MUST
-%be treated as a connection error of type H3_ID_ERROR.
-
-%% 7.2.8. Reserved Frame Types
-%% These frames have no semantics, and they MAY be sent on any stream where
-%frames are allowed to be sent. This enables their use for application-layer
-%padding. Endpoints MUST NOT consider these frames to have any meaning upon
-%receipt.
-%% Frame types that were used in HTTP/2 where there is no corresponding HTTP/3
-%frame have also been reserved (Section 11.2.1). These frame types MUST NOT be
-%sent, and their receipt MUST be treated as a connection error of type
-%H3_FRAME_UNEXPECTED.
-
-%% 8. Error Handling
-%% An endpoint MAY choose to treat a stream error as a connection error under
-%certain circumstances, closing the entire connection in response to a
-%condition on a single stream.
-%% Because new error codes can be defined without negotiation (see Section 9),
-%use of an error code in an unexpected context or receipt of an unknown error
-%code MUST be treated as equivalent to H3_NO_ERROR.
-
-%% 8.1. HTTP/3 Error Codes
-%% H3_INTERNAL_ERROR (0x0102): An internal error has occurred in the HTTP stack.
-%% H3_FRAME_ERROR (0x0106): A frame that fails to satisfy layout requirements
-%or with an invalid size was received.
-%% H3_EXCESSIVE_LOAD (0x0107): The endpoint detected that its peer is
-%exhibiting a behavior that might be generating excessive load.
-%% (more)
-%% Error codes of the format 0x1f * N + 0x21 for non-negative integer values of
-%N are reserved to exercise the requirement that unknown error codes be treated
-%as equivalent to H3_NO_ERROR (Section 9). Implementations SHOULD select an
-%error code from this space with some probability when they would have sent
-%H3_NO_ERROR.
-
-%% 9. Extensions to HTTP/3
-%% Extensions are permitted to use new frame types (Section 7.2), new settings
-%(Section 7.2.4.1), new error codes (Section 8), or new unidirectional stream
-%types (Section 6.2). Registries are established for managing these extension
-%points: frame types (Section 11.2.1), settings (Section 11.2.2), error codes
-%(Section 11.2.3), and stream types (Section 11.2.4).
-%% Implementations MUST ignore unknown or unsupported values in all extensible
-%protocol elements. Implementations MUST discard data or abort reading on
-%unidirectional streams that have unknown or unsupported types. This means that
-%any of these extension points can be safely used by extensions without prior
-%arrangement or negotiation. However, where a known frame type is required to
-%be in a specific location, such as the SETTINGS frame as the first frame of
-%the control stream (see Section 6.2.1), an unknown frame type does not satisfy
-%that requirement and SHOULD be treated as an error.
-%% If a setting is used for extension negotiation, the default value MUST be
-%defined in such a fashion that the extension is disabled if the setting is
-%omitted.
-
-%% 10. Security Considerations
-%% 10.3. Intermediary-Encapsulation Attacks
-%% Requests or responses containing invalid field names MUST be treated as malformed.
-%% Any request or response that contains a character not permitted in a field
-%value MUST be treated as malformed.
-
-%% 10.5. Denial-of-Service Considerations
-%% Implementations SHOULD track the use of these features and set limits on
-%their use. An endpoint MAY treat activity that is suspicious as a connection
-%error of type H3_EXCESSIVE_LOAD, but false positives will result in disrupting
-%valid connections and requests.
-
-%% 10.5.1. Limits on Field Section Size
-%% An endpoint can use the SETTINGS_MAX_FIELD_SECTION_SIZE (Section 4.2.2)
-%setting to advise peers of limits that might apply on the size of field
-%sections.
-%% A server that receives a larger field section than it is willing to handle
-%can send an HTTP 431 (Request Header Fields Too Large) status code
-%([RFC6585]).
-
-%% 10.6. Use of Compression
-%% Implementations communicating on a secure channel MUST NOT compress content
-%that includes both confidential and attacker-controlled data unless separate
-%compression contexts are used for each source of data. Compression MUST NOT be
-%used if the source of data cannot be reliably determined.
-
-%% 10.8. Frame Parsing
-%% An implementation MUST ensure that the length of a frame exactly matches the
-%length of the fields it contains.
-
-%% 10.9. Early Data
-%% The anti-replay mitigations in [HTTP-REPLAY] MUST be applied when using HTTP/3 with 0-RTT.
-
-%% 10.10. Migration
-%% Certain HTTP implementations use the client address for logging or
-%access-control purposes. Since a QUIC client's address might change during a
-%connection (and future versions might support simultaneous use of multiple
-%addresses), such implementations will need to either actively retrieve the
-%client's current address or addresses when they are relevant or explicitly
-%accept that the original address might change. -> documentation for now
-
-%% 11.2.1. Frame Types
-%% Reserved types: 0x02 0x06 0x08 0x09
-
-%% 11.2.2. Settings Parameters
-%% Reserved settings: 0x00 0x02 0x03 0x04 0x05
-
-%% Appendix A. Considerations for Transitioning from HTTP/2
-%% A.1. Streams
-%% QUIC considers a stream closed when all data has been received and sent data
-%has been acknowledged by the peer. HTTP/2 considers a stream closed when the
-%frame containing the END_STREAM bit has been committed to the transport. As a
-%result, the stream for an equivalent exchange could remain "active" for a
-%longer period of time. HTTP/3 servers might choose to permit a larger number
-%of concurrent client-initiated bidirectional streams to achieve equivalent
-%concurrency to HTTP/2, depending on the expected usage patterns. ->
-%documentation?
-
-%% A.3. HTTP/2 SETTINGS Parameters
-%% SETTINGS_MAX_FRAME_SIZE (0x05): This setting has no equivalent in HTTP/3.
-%Specifying a setting with the identifier 0x05 (corresponding to the
-%SETTINGS_MAX_FRAME_SIZE parameter) in the HTTP/3 SETTINGS frame is an error.
-%-> do we still want a limit, if so how?

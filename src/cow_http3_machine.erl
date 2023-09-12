@@ -57,6 +57,9 @@
 	%% Whether the HTTP/3 endpoint is a client or a server.
 	mode :: client | server,
 
+	%% Maximum Push ID.
+	max_push_id = -1 :: -1 | non_neg_integer(),
+
 	%% Quick pointers for commonly used streams.
 	local_encoder_ref :: any(), %% @todo specs
 	local_decoder_ref :: any(), %% @todo specs
@@ -469,13 +472,21 @@ push_promise_frame(Frame, _IsFin, StreamRef, State) ->
 goaway_frame(Frame, _IsFin, StreamRef, State) ->
 	case stream_get(StreamRef, State) of
 		#stream{type=control} ->
-			control_frame(Frame, State)
+			control_frame(Frame, State);
+		#stream{type=req} ->
+			{error, {connection_error, h3_frame_unexpected,
+				'The GOAWAY frame is not allowed on a bidi stream. (RFC9114 7.2.6)'},
+				State}
 	end.
 
 max_push_id_frame(Frame, _IsFin, StreamRef, State) ->
 	case stream_get(StreamRef, State) of
 		#stream{type=control} ->
-			control_frame(Frame, State)
+			control_frame(Frame, State);
+		#stream{type=req} ->
+			{error, {connection_error, h3_frame_unexpected,
+				'The MAX_PUSH_ID frame is not allowed on a bidi stream. (RFC9114 7.2.7)'},
+				State}
 	end.
 
 control_frame({settings, _Settings}, State=#http3_machine{has_received_peer_settings=false}) ->
@@ -491,7 +502,16 @@ control_frame(_Frame, State=#http3_machine{has_received_peer_settings=false}) ->
 control_frame(Frame = {goaway, _}, State) ->
 	{ok, Frame, State};
 %% @todo Implement server push.
-control_frame({max_push_id, _}, State) ->
+control_frame({max_push_id, PushID}, State=#http3_machine{max_push_id=MaxPushID}) ->
+	if
+		PushID >= MaxPushID ->
+			{ok, State#http3_machine{max_push_id=PushID}};
+		true ->
+			{error, {connection_error, h3_id_error,
+				'MAX_PUSH_ID must not be lower than previously received. (RFC9114 7.2.7)'},
+				State}
+	end;
+control_frame(ignored_frame, State) ->
 	{ok, State};
 control_frame(_Frame, State) ->
 	{error, {connection_error, h3_frame_unexpected,

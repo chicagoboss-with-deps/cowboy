@@ -46,8 +46,8 @@ init_http3(Ref, ProtoOpts, Config) ->
 	%%       we currently have no authentication based security.
 	TransOpts = #{
 		socket_opts => [
-			{cert, config(data_dir, Config) ++ "server.pem"},
-			{key, config(data_dir, Config) ++ "server.key"}
+			{cert, config(data_dir, Config) ++ "../rfc9114_SUITE_data/server.pem"},
+			{key, config(data_dir, Config) ++ "../rfc9114_SUITE_data/server.key"}
 		]
 	},
 	{ok, _} = cowboy:start_quic(TransOpts, ProtoOpts), %% @todo Ref argument.

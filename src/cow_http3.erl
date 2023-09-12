@@ -333,10 +333,13 @@ settings(Settings) ->
 	[<<4:8>>, Len, Payload].
 
 settings_payload(Settings) ->
-	[case Key of
+	Payload = [case Key of
 		max_header_list_size when Value =:= infinity -> <<>>;
 		max_header_list_size -> [encode_int(6), encode_int(Value)]
-	end || {Key, Value} <- maps:to_list(Settings)].
+	end || {Key, Value} <- maps:to_list(Settings)],
+	%% Include one reserved identifier in addition.
+	ReservedType = 16#1f * (rand:uniform(148764065110560900) - 1) + 16#21,
+	[encode_int(ReservedType), encode_int(rand:uniform(15384) - 1)|Payload].
 
 -spec error_to_code(_) -> todo.
 

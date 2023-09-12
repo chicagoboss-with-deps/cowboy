@@ -252,7 +252,7 @@ parse_unidirectional_stream_header(State0=#state{http3_machine=HTTP3Machine0},
 		%% Unknown stream types must be ignored. We choose to abort the
 		%% stream instead of reading and discarding the incoming data.
 		{undefined, _} ->
-			loop(stream_abort_receive(State0, Stream0, h3_no_error))
+			loop(stream_abort_receive(State0, Stream0, h3_stream_creation_error))
 	end.
 
 frame(State=#state{http3_machine=HTTP3Machine0}, Stream=#stream{ref=StreamRef}, Frame, IsFin) ->
