@@ -73,19 +73,15 @@ init(Parent, Conn, Opts) ->
 	{ok, ControlRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
 	{ok, _} = quicer:send(ControlRef, [<<0>>, SettingsBin]),
-	{ok, ControlID} = quicer:get_stream_id(ControlRef),
 	{ok, EncoderRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
 	{ok, _} = quicer:send(EncoderRef, <<2>>),
-	{ok, EncoderID} = quicer:get_stream_id(EncoderRef),
 	{ok, DecoderRef} = quicer:start_stream(Conn,
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
 	{ok, _} = quicer:send(DecoderRef, <<3>>),
-	{ok, DecoderID} = quicer:get_stream_id(DecoderRef),
 	%% Set the control, encoder and decoder streams in the machine.
 	HTTP3Machine = cow_http3_machine:init_unidi_local_streams(
-		ControlRef, ControlID, EncoderRef, EncoderID, DecoderRef, DecoderID,
-		HTTP3Machine0),
+		ControlRef, EncoderRef, DecoderRef, HTTP3Machine0),
 	%% Get the peername/sockname.
 	Peer0 = quicer:peername(Conn),
 	Sock0 = quicer:sockname(Conn),
@@ -548,6 +544,7 @@ send_response(State0=#state{http3_machine=HTTP3Machine0}, StreamRef, StatusCode,
 		_ ->
 			%% @todo Add a test for HEAD to make sure we don't send the body when
 			%% returning {response...} from a stream handler (or {headers...} then {data...}).
+			%% @todo We must send EncData!
 			{ok, _IsFin, HeaderBlock, _EncData, HTTP3Machine}
 				= cow_http3_machine:prepare_headers(StreamRef, HTTP3Machine0, nofin,
 					#{status => cow_http:status_to_integer(StatusCode)},
@@ -563,11 +560,12 @@ send_response(State0=#state{http3_machine=HTTP3Machine0}, StreamRef, StatusCode,
 
 send_headers(State=#state{http3_machine=HTTP3Machine0},
 		StreamRef, IsFin0, StatusCode, Headers) ->
-	{ok, IsFin, HeaderBlock, HTTP3Machine}
+	{ok, IsFin, HeaderBlock, _EncData, HTTP3Machine}
 		= cow_http3_machine:prepare_headers(StreamRef, HTTP3Machine0, IsFin0,
 			#{status => cow_http:status_to_integer(StatusCode)},
 			headers_to_list(Headers)),
 	{ok, _} = quicer:send(StreamRef, cow_http3:headers(HeaderBlock), send_flag(IsFin)),
+	%% @todo Send _EncData.
 	State#state{http3_machine=HTTP3Machine}.
 
 %% The set-cookie header is special; we can only send one cookie per header.
@@ -627,10 +625,11 @@ terminate_stream_handler(#state{opts=Opts}, StreamRef, Reason, StreamState) ->
 
 
 stop_stream(_, _) ->
-	todo.
+	error(todo).
 
-maybe_terminate_stream(_, _, _) ->
-	todo.
+%% @todo Maybe do this on stream close instead.
+maybe_terminate_stream(State, _, _) ->
+	State.
 
 ignored_frame(State=#state{http3_machine=HTTP3Machine0}, #stream{ref=StreamRef}) ->
 	case cow_http3_machine:ignored_frame(StreamRef, HTTP3Machine0) of
@@ -687,13 +686,14 @@ terminate_all_streams(State, [{StreamID, #stream{state=StreamState}}|Tail], Reas
 
 
 stream_new_remote(State=#state{http3_machine=HTTP3Machine0, streams=Streams}, StreamRef, Flags) ->
-	{ok, StreamID} = quicer:get_stream_id(StreamRef),
-	{StreamDir, StreamType, Status} = case quicer:is_unidirectional(Flags) of
-		true -> {unidi_remote, undefined, header};
-		false -> {bidi, req, normal}
+	{HTTP3Machine, Status} = case quicer:is_unidirectional(Flags) of
+		true ->
+			{cow_http3_machine:init_unidi_stream(StreamRef, unidi_remote, HTTP3Machine0),
+				header};
+		false ->
+			{cow_http3_machine:init_bidi_stream(StreamRef, HTTP3Machine0),
+				normal}
 	end,
-	HTTP3Machine = cow_http3_machine:init_stream(StreamRef,
-		StreamID, StreamDir, StreamType, HTTP3Machine0),
 	Stream = #stream{ref=StreamRef, status=Status},
 %	ct:pal("new stream ~p ~p", [Stream, HTTP3Machine]),
 	State#state{http3_machine=HTTP3Machine, streams=Streams#{StreamRef => Stream}}.

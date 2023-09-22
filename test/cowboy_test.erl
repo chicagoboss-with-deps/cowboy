@@ -44,10 +44,12 @@ init_http3(Ref, ProtoOpts, Config) ->
 	%%       so we use quicer test certificates for now.
 	%% @todo Quicer also does not support cacerts which means
 	%%       we currently have no authentication based security.
+	DataDir = filename:dirname(filename:dirname(config(data_dir, Config)))
+		++ "/rfc9114_SUITE_data",
 	TransOpts = #{
 		socket_opts => [
-			{cert, config(data_dir, Config) ++ "../rfc9114_SUITE_data/server.pem"},
-			{key, config(data_dir, Config) ++ "../rfc9114_SUITE_data/server.key"}
+			{cert, DataDir ++ "/server.pem"},
+			{key, DataDir ++ "/server.key"}
 		]
 	},
 	{ok, _} = cowboy:start_quic(TransOpts, ProtoOpts), %% @todo Ref argument.
@@ -61,6 +63,7 @@ common_all() ->
 		{group, https},
 		{group, h2},
 		{group, h2c},
+		{group, h3},
 		{group, http_compress},
 		{group, https_compress},
 		{group, h2_compress},
@@ -77,6 +80,7 @@ common_groups(Tests) ->
 		{https, Opts, Tests},
 		{h2, Opts, Tests},
 		{h2c, Opts, Tests},
+		{h3, [], Tests}, %% @todo Enable parallel when issues get fixed.
 		{http_compress, Opts, Tests},
 		{https_compress, Opts, Tests},
 		{h2_compress, Opts, Tests},
@@ -100,6 +104,10 @@ init_common_groups(Name = h2c, Config, Mod) ->
 		env => #{dispatch => Mod:init_dispatch(Config)}
 	}, [{flavor, vanilla}|Config]),
 	lists:keyreplace(protocol, 1, Config1, {protocol, http2});
+init_common_groups(Name = h3, Config, Mod) ->
+	init_http3(Name, #{
+		env => #{dispatch => Mod:init_dispatch(Config)}
+	}, [{flavor, vanilla}|Config]);
 init_common_groups(Name = http_compress, Config, Mod) ->
 	init_http(Name, #{
 		env => #{dispatch => Mod:init_dispatch(Config)},
