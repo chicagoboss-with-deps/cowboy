@@ -181,7 +181,8 @@ bindings(Config) ->
 cert(Config) ->
 	case config(type, Config) of
 		tcp -> doc("TLS certificates can only be provided over TLS.");
-		ssl -> do_cert(Config)
+		ssl -> do_cert(Config);
+		quic -> {skip, "Implement using quicer:peercert/1."}
 	end.
 
 do_cert(Config) ->
@@ -382,7 +383,8 @@ port(Config) ->
 	Port = do_get_body("/direct/port", Config),
 	ExpectedPort = case config(type, Config) of
 		tcp -> <<"80">>;
-		ssl -> <<"443">>
+		ssl -> <<"443">>;
+		quic -> <<"443">>
 	end,
 	ExpectedPort = do_get_body("/port", [{<<"host">>, <<"localhost">>}], Config),
 	ExpectedPort = do_get_body("/direct/port", [{<<"host">>, <<"localhost">>}], Config),
@@ -408,7 +410,8 @@ do_scheme(Path, Config) ->
 	Transport = config(type, Config),
 	case do_get_body(Path, Config) of
 		<<"http">> when Transport =:= tcp -> ok;
-		<<"https">> when Transport =:= ssl -> ok
+		<<"https">> when Transport =:= ssl -> ok;
+		<<"https">> when Transport =:= quic -> ok
 	end.
 
 sock(Config) ->
@@ -421,7 +424,8 @@ uri(Config) ->
 	doc("Request URI building/modification."),
 	Scheme = case config(type, Config) of
 		tcp -> <<"http">>;
-		ssl -> <<"https">>
+		ssl -> <<"https">>;
+		quic -> <<"https">>
 	end,
 	SLen = byte_size(Scheme),
 	Port = integer_to_binary(config(port, Config)),
@@ -455,7 +459,8 @@ do_version(Path, Config) ->
 	Protocol = config(protocol, Config),
 	case do_get_body(Path, Config) of
 		<<"HTTP/1.1">> when Protocol =:= http -> ok;
-		<<"HTTP/2">> when Protocol =:= http2 -> ok
+		<<"HTTP/2">> when Protocol =:= http2 -> ok;
+		<<"HTTP/3">> when Protocol =:= http3 -> ok
 	end.
 
 %% Tests: Request body.
@@ -603,6 +608,8 @@ do_read_urlencoded_body_too_long(Path, Body, Config) ->
 			%% 408 error responses should close HTTP/1.1 connections.
 			{_, <<"close">>} = lists:keyfind(<<"connection">>, 1, RespHeaders);
 		http2 ->
+			ok;
+		http3 ->
 			ok
 	end,
 	gun:close(ConnPid).
@@ -1021,8 +1028,11 @@ stream_body_content_length_nofin_error(Config) ->
 					end
 			end;
 		http2 ->
-			%% @todo HTTP2 should have the same content-length checks
-			ok
+			%% @todo HTTP/2 should have the same content-length checks.
+			{skip, "Implement the test for HTTP/2."};
+		http3 ->
+			%% @todo HTTP/3 should have the same content-length checks.
+			{skip, "Implement the test for HTTP/3."}
 	end.
 
 stream_body_concurrent(Config) ->
@@ -1140,26 +1150,30 @@ do_trailers(Path, Config) ->
 push(Config) ->
 	case config(protocol, Config) of
 		http -> do_push_http("/resp/push", Config);
-		http2 -> do_push_http2(Config)
+		http2 -> do_push_http2(Config);
+		http3 -> {skip, "Implement server push for HTTP/3."}
 	end.
 
 push_method(Config) ->
 	case config(protocol, Config) of
 		http -> do_push_http("/resp/push/method", Config);
-		http2 -> do_push_http2_method(Config)
+		http2 -> do_push_http2_method(Config);
+		http3 -> {skip, "Implement server push for HTTP/3."}
 	end.
 
 
 push_origin(Config) ->
 	case config(protocol, Config) of
 		http -> do_push_http("/resp/push/origin", Config);
-		http2 -> do_push_http2_origin(Config)
+		http2 -> do_push_http2_origin(Config);
+		http3 -> {skip, "Implement server push for HTTP/3."}
 	end.
 
 push_qs(Config) ->
 	case config(protocol, Config) of
 		http -> do_push_http("/resp/push/qs", Config);
-		http2 -> do_push_http2_qs(Config)
+		http2 -> do_push_http2_qs(Config);
+		http3 -> {skip, "Implement server push for HTTP/3."}
 	end.
 
 do_push_http(Path, Config) ->

@@ -20,11 +20,15 @@
 -export([set_unidi_remote_stream_type/3]).
 -export([init_bidi_stream/2]).
 -export([init_bidi_stream/3]).
+-export([close_bidi_stream_for_sending/2]).
 -export([close_stream/2]).
 -export([frame/4]).
 -export([ignored_frame/2]).
 -export([prepare_headers/5]).
+-export([prepare_trailers/3]).
 -export([reset_stream/2]).
+-export([get_stream_local_state/2]).
+-export([get_stream_remote_state/2]).
 
 -record(stream, {
 	ref :: any(), %% @todo specs
@@ -130,6 +134,12 @@ init_bidi_stream(StreamRef, Method, State=#http3_machine{streams=Streams}) ->
 		ref=StreamRef, dir=bidi, type=req, method=Method}}}.
 
 %% @todo set_bidi_method?
+
+-spec close_bidi_stream_for_sending(_, _) -> _. %% @todo
+
+close_bidi_stream_for_sending(StreamRef, State=#http3_machine{streams=Streams}) ->
+	#{StreamRef := Stream} = Streams,
+	stream_store(Stream#stream{local=fin}, State).
 
 -spec close_stream(_, _) -> _. %% @todo
 
@@ -660,6 +670,27 @@ merge_pseudo_headers(PseudoHeaders, Headers0) ->
 			[{iolist_to_binary([$:, atom_to_binary(Name, latin1)]), Value}|Acc]
 		end, Headers0, maps:to_list(PseudoHeaders)).
 
+-spec prepare_trailers(_, _, _) -> todo.
+
+prepare_trailers(StreamRef, State=#http3_machine{encode_state=EncodeState0}, Trailers) ->
+	Stream = #stream{local=nofin, te=TE0} = stream_get(StreamRef, State),
+	TE = try cow_http_hd:parse_te(TE0) of
+		{trailers, []} -> trailers;
+		_ -> no_trailers
+	catch _:_ ->
+		%% If we can't parse the TE header, assume we can't send trailers.
+		no_trailers
+	end,
+	case TE of
+		trailers ->
+			{ok, StreamID} = quicer:get_stream_id(StreamRef),
+			{ok, HeaderBlock, EncData, EncodeState} = cow_qpack:encode_field_section(Trailers, StreamID, EncodeState0),
+			{trailers, HeaderBlock, EncData, stream_store(Stream#stream{local=fin},
+				State#http3_machine{encode_state=EncodeState})};
+		no_trailers ->
+			{no_trailers, stream_store(Stream#stream{local=fin}, State)}
+	end.
+
 %% Public interface to reset streams.
 
 -spec reset_stream(_, _) -> todo.
@@ -672,15 +703,44 @@ reset_stream(StreamRef, State=#http3_machine{streams=Streams0}) ->
 			{error, not_found}
 	end.
 
+%% Retrieve the local state for a stream.
+
+-spec get_stream_local_state(_, _) -> todo.
+
+get_stream_local_state(StreamRef, State) ->
+	case stream_get(StreamRef, State) of
+		#stream{local=IsFin} ->
+			{ok, IsFin};
+		%% Stream may never have been opened, or could have
+		%% already been closed.
+		undefined ->
+			{error, not_found}
+	end.
+
+%% Retrieve the remote state for a stream.
+
+-spec get_stream_remote_state(_, _) -> todo.
+
+get_stream_remote_state(StreamRef, State) ->
+	case stream_get(StreamRef, State) of
+		#stream{remote=IsFin} ->
+			{ok, IsFin};
+		%% Stream may never have been opened, or could have
+		%% already been closed.
+		undefined ->
+			{error, not_found}
+	end.
+
 %% Stream-related functions.
 
 stream_get(StreamRef, #http3_machine{streams=Streams}) ->
 	maps:get(StreamRef, Streams, undefined).
 
-stream_store(#stream{ref=StreamRef, local=fin, remote=fin},
-		State=#http3_machine{streams=Streams0}) ->
-	Streams = maps:remove(StreamRef, Streams0),
-	State#http3_machine{streams=Streams};
+%stream_store(#stream{ref=StreamRef, local=fin, remote=fin},
+%		State=#http3_machine{streams=Streams0}) ->
+%	%% @todo We may want to wait for the QUIC message about stream closure.
+%	Streams = maps:remove(StreamRef, Streams0),
+%	State#http3_machine{streams=Streams};
 stream_store(Stream=#stream{ref=StreamRef},
 		State=#http3_machine{streams=Streams}) ->
 	State#http3_machine{streams=Streams#{StreamRef => Stream}}.
