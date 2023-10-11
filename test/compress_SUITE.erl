@@ -28,6 +28,7 @@ all() ->
 		{group, https_compress},
 		{group, h2_compress},
 		{group, h2c_compress}
+		%% @todo h3_compress
 	].
 
 groups() ->

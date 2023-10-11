@@ -44,6 +44,8 @@ init_per_group(Name = h2, Config) ->
 init_per_group(Name = h2c, Config) ->
 	Config1 = cowboy_test:init_http(Name, init_plain_opts(Config), Config),
 	lists:keyreplace(protocol, 1, Config1, {protocol, http2});
+init_per_group(Name = h3, Config) ->
+	cowboy_test:init_http3(Name, init_plain_opts(Config), Config);
 init_per_group(Name = http_compress, Config) ->
 	cowboy_test:init_http(Name, init_compress_opts(Config), Config);
 init_per_group(Name = https_compress, Config) ->
@@ -157,14 +159,22 @@ do_get(Path, UserData, Config) ->
 			#{
 				ref := _,
 				pid := From,
-				streamid := 1,
-				reason := normal,
+				streamid := StreamID,
+				reason := normal, %% @todo Getting h3_no_error here.
 				req := #{},
 				informational := [],
 				user_data := UserData
 			} = Metrics,
+			do_check_streamid(StreamID, Config),
 			%% All good!
 			gun:close(ConnPid)
+	end.
+
+do_check_streamid(StreamID, Config) ->
+	case config(protocol, Config) of
+		http -> 1 = StreamID;
+		http2 -> 1 = StreamID;
+		http3 -> 0 = StreamID
 	end.
 
 post_body(Config) ->
@@ -218,12 +228,13 @@ post_body(Config) ->
 			#{
 				ref := _,
 				pid := From,
-				streamid := 1,
+				streamid := StreamID,
 				reason := normal,
 				req := #{},
 				informational := [],
 				user_data := #{}
 			} = Metrics,
+			do_check_streamid(StreamID, Config),
 			%% All good!
 			gun:close(ConnPid)
 	end.
@@ -273,12 +284,13 @@ no_resp_body(Config) ->
 			#{
 				ref := _,
 				pid := From,
-				streamid := 1,
+				streamid := StreamID,
 				reason := normal,
 				req := #{},
 				informational := [],
 				user_data := #{}
 			} = Metrics,
+			do_check_streamid(StreamID, Config),
 			%% All good!
 			gun:close(ConnPid)
 	end.
@@ -291,7 +303,8 @@ early_error(Config) ->
 	%% reason in both protocols.
 	{Method, Headers, Status, Error} = case config(protocol, Config) of
 		http -> {<<"GET">>, [{<<"host">>, <<"host:port">>}], 400, protocol_error};
-		http2 -> {<<"TRACE">>, [], 501, no_error}
+		http2 -> {<<"TRACE">>, [], 501, no_error};
+		http3 -> {<<"TRACE">>, [], 501, h3_no_error}
 	end,
 	Ref = gun:request(ConnPid, Method, "/", [
 		{<<"accept-encoding">>, <<"gzip">>},
@@ -305,7 +318,7 @@ early_error(Config) ->
 			#{
 				ref := _,
 				pid := From,
-				streamid := 1,
+				streamid := StreamID,
 				reason := {stream_error, Error, _},
 				partial_req := #{},
 				resp_status := Status,
@@ -313,6 +326,7 @@ early_error(Config) ->
 				early_error_time := _,
 				resp_body_length := 0
 			} = Metrics,
+			do_check_streamid(StreamID, Config),
 			ExpectedRespHeaders = maps:from_list(RespHeaders),
 			%% All good!
 			gun:close(ConnPid)
@@ -321,7 +335,8 @@ early_error(Config) ->
 early_error_request_line(Config) ->
 	case config(protocol, Config) of
 		http -> do_early_error_request_line(Config);
-		http2 -> doc("There are no request lines in HTTP/2.")
+		http2 -> doc("There are no request lines in HTTP/2.");
+		http3 -> doc("There are no request lines in HTTP/3.")
 	end.
 
 do_early_error_request_line(Config) ->
@@ -341,7 +356,7 @@ do_early_error_request_line(Config) ->
 			#{
 				ref := _,
 				pid := From,
-				streamid := 1,
+				streamid := StreamID,
 				reason := {connection_error, protocol_error, _},
 				partial_req := #{},
 				resp_status := 400,
@@ -349,6 +364,7 @@ do_early_error_request_line(Config) ->
 				early_error_time := _,
 				resp_body_length := 0
 			} = Metrics,
+			do_check_streamid(StreamID, Config),
 			ExpectedRespHeaders = maps:from_list(RespHeaders),
 			%% All good!
 			ok
@@ -405,7 +421,7 @@ do_ws(Config) ->
 			#{
 				ref := _,
 				pid := From,
-				streamid := 1,
+				streamid := StreamID,
 				reason := switch_protocol,
 				req := #{},
 				%% A 101 upgrade response was sent.
@@ -420,6 +436,7 @@ do_ws(Config) ->
 				}],
 				user_data := #{}
 			} = Metrics,
+			do_check_streamid(StreamID, Config),
 			%% All good!
 			ok
 	end,
@@ -476,12 +493,13 @@ error_response(Config) ->
 			#{
 				ref := _,
 				pid := From,
-				streamid := 1,
+				streamid := StreamID,
 				reason := {internal_error, {'EXIT', _Pid, {crash, StackTrace}}, 'Stream process crashed.'},
 				req := #{},
 				informational := [],
 				user_data := #{}
 			} = Metrics,
+			do_check_streamid(StreamID, Config),
 			%% All good!
 			gun:close(ConnPid)
 	end.
@@ -533,12 +551,13 @@ error_response_after_reply(Config) ->
 			#{
 				ref := _,
 				pid := From,
-				streamid := 1,
+				streamid := StreamID,
 				reason := {internal_error, {'EXIT', _Pid, {crash, StackTrace}}, 'Stream process crashed.'},
 				req := #{},
 				informational := [],
 				user_data := #{}
 			} = Metrics,
+			do_check_streamid(StreamID, Config),
 			%% All good!
 			gun:close(ConnPid)
 	end.
