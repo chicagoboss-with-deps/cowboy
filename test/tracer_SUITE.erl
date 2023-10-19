@@ -30,7 +30,8 @@ suite() ->
 %% init_per_suite/1, but this works just as well.
 all() ->
 	cowboy_tracer_h:set_trace_patterns(),
-	cowboy_test:common_all().
+	%% @todo Implement these tests for HTTP/3.
+	cowboy_test:common_all() -- [{group, h3}, {group, h3_compress}].
 
 %% We want tests for each group to execute sequentially
 %% because we need to modify the protocol options. Groups

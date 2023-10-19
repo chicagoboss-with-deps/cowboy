@@ -77,10 +77,13 @@ start_quic(TransOpts, ProtoOpts) ->
 		{peer_unidi_stream_count, 3}, %% We only need control and QPACK enc/dec.
 		{peer_bidi_stream_count, 100}
 	|SocketOpts0],
-	{ok, Listen} = quicer:listen(Port, SocketOpts),
-	ListenerPid = spawn(fun AcceptLoop() ->
-		{ok, Conn} = quicer:accept(Listen, []),
+	{ok, Listener} = quicer:listen(Port, SocketOpts),
+	ct:pal("listen ~p", [Listener]),
+	_ListenerPid = spawn(fun AcceptLoop() ->
+		{ok, Conn} = quicer:accept(Listener, []),
+		ct:pal("accept ~p", [Conn]),
 		{ok, Conn} = quicer:handshake(Conn),
+		ct:pal("handshake ~p", [Conn]),
 		Pid = spawn(fun() ->
 			receive go -> ok end,
 			process_flag(trap_exit, true), %% @todo Only if supervisor though.
@@ -94,7 +97,7 @@ start_quic(TransOpts, ProtoOpts) ->
 		Pid ! go,
 		AcceptLoop()
 	end),
-	{ok, ListenerPid}.
+	{ok, Listener}.
 
 -spec start_quic_test() -> ok.
 start_quic_test() ->

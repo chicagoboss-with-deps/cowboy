@@ -48,12 +48,22 @@ init_http3(Ref, ProtoOpts, Config) ->
 		++ "/rfc9114_SUITE_data",
 	TransOpts = #{
 		socket_opts => [
-			{cert, DataDir ++ "/server.pem"},
-			{key, DataDir ++ "/server.key"}
+			{certfile, DataDir ++ "/server.pem"},
+			{keyfile, DataDir ++ "/server.key"}
 		]
 	},
-	{ok, _} = cowboy:start_quic(TransOpts, ProtoOpts), %% @todo Ref argument.
+	{ok, Listener} = cowboy:start_quic(TransOpts, ProtoOpts), %% @todo Ref argument.
+	%% @todo Keep listener information around in a better place.
+	persistent_term:put({cowboy_test_quic, Ref}, Listener),
 	[{ref, Ref}, {type, quic}, {protocol, http3}, {port, Port}, {opts, TransOpts}|Config].
+
+stop_group(Ref) ->
+	case persistent_term:get({cowboy_test_quic, Ref}, undefined) of
+		undefined ->
+			cowboy:stop_listener(Ref);
+		Listener ->
+			quicer:close_listener(Listener)
+	end.
 
 %% Common group of listeners used by most suites.
 
@@ -67,7 +77,8 @@ common_all() ->
 		{group, http_compress},
 		{group, https_compress},
 		{group, h2_compress},
-		{group, h2c_compress}
+		{group, h2c_compress},
+		{group, h3_compress}
 	].
 
 common_groups(Tests) ->
@@ -84,7 +95,8 @@ common_groups(Tests) ->
 		{http_compress, Opts, Tests},
 		{https_compress, Opts, Tests},
 		{h2_compress, Opts, Tests},
-		{h2c_compress, Opts, Tests}
+		{h2c_compress, Opts, Tests},
+		{h3_compress, [], Tests} %% @todo Enable parallel when issues get fixed.
 	].
 
 init_common_groups(Name = http, Config, Mod) ->
@@ -128,7 +140,12 @@ init_common_groups(Name = h2c_compress, Config, Mod) ->
 		env => #{dispatch => Mod:init_dispatch(Config)},
 		stream_handlers => [cowboy_compress_h, cowboy_stream_h]
 	}, [{flavor, compress}|Config]),
-	lists:keyreplace(protocol, 1, Config1, {protocol, http2}).
+	lists:keyreplace(protocol, 1, Config1, {protocol, http2});
+init_common_groups(Name = h3_compress, Config, Mod) ->
+	init_http3(Name, #{
+		env => #{dispatch => Mod:init_dispatch(Config)},
+		stream_handlers => [cowboy_compress_h, cowboy_stream_h]
+	}, [{flavor, compress}|Config]).
 
 %% Support functions for testing using Gun.
 
@@ -138,7 +155,7 @@ gun_open(Config) ->
 gun_open(Config, Opts) ->
 	TlsOpts = case proplists:get_value(no_cert, Config, false) of
 		true -> [{verify, verify_none}];
-		false -> ct_helper:get_certs_from_ets()
+		false -> ct_helper:get_certs_from_ets() %% @todo Wrong in current quicer.
 	end,
 	{ok, ConnPid} = gun:open("localhost", config(port, Config), Opts#{
 		retry => 0,

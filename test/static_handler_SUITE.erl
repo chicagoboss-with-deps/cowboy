@@ -39,16 +39,22 @@ groups() ->
 		{dir, [parallel], DirTests},
 		{priv_dir, [parallel], DirTests}
 	],
+	GroupTestsNoParallel = OtherTests ++ [
+		{dir, [], DirTests},
+		{priv_dir, [], DirTests}
+	],
 	[
 		{http, [parallel], GroupTests},
 		{https, [parallel], GroupTests},
 		{h2, [parallel], GroupTests},
 		{h2c, [parallel], GroupTests},
+		{h3, [], GroupTestsNoParallel}, %% @todo Enable parallel when it works better.
 		{http_compress, [parallel], GroupTests},
 		{https_compress, [parallel], GroupTests},
 		{h2_compress, [parallel], GroupTests},
 		{h2c_compress, [parallel], GroupTests},
-		%% No real need to test sendfile disabled against https or h2.
+		{h3_compress, [], GroupTestsNoParallel}, %% @todo Enable parallel when it works better.
+		%% No real need to test sendfile disabled against https, h2 or h3.
 		{http_no_sendfile, [parallel], GroupTests},
 		{h2c_no_sendfile, [parallel], GroupTests}
 	].
@@ -116,6 +122,17 @@ init_per_group(Name=h2c_no_sendfile, Config) ->
 		sendfile => false
 	}, [{flavor, vanilla}|Config]),
 	lists:keyreplace(protocol, 1, Config1, {protocol, http2});
+init_per_group(Name=h3, Config) ->
+	cowboy_test:init_http3(Name, #{
+		env => #{dispatch => init_dispatch(Config)},
+		middlewares => [?MODULE, cowboy_router, cowboy_handler]
+	}, [{flavor, vanilla}|Config]);
+init_per_group(Name=h3_compress, Config) ->
+	cowboy_test:init_http3(Name, #{
+		env => #{dispatch => init_dispatch(Config)},
+		middlewares => [?MODULE, cowboy_router, cowboy_handler],
+		stream_handlers => [cowboy_compress_h, cowboy_stream_h]
+	}, [{flavor, vanilla}|Config]);
 init_per_group(Name, Config) ->
 	Config1 = cowboy_test:init_common_groups(Name, Config, ?MODULE),
 	Opts = ranch:get_protocol_options(Name),
@@ -129,7 +146,7 @@ end_per_group(dir, _) ->
 end_per_group(priv_dir, _) ->
 	ok;
 end_per_group(Name, _) ->
-	cowboy:stop_listener(Name).
+	cowboy_test:stop_group(Name).
 
 %% Large file.
 
@@ -933,7 +950,8 @@ unicode_basic_error(Config) ->
 		%% # and ? indicate fragment and query components
 		%% and are therefore not part of the path.
 		http -> "\r\s#?";
-		http2 -> "#?"
+		http2 -> "#?";
+		http3 -> "#?"
 	end,
 	_ = [case do_get("/char/" ++ [C], Config) of
 		{400, _, _} -> ok;

@@ -34,8 +34,8 @@ init_per_group(Name = quic, Config) ->
 		env => #{dispatch => cowboy_router:compile(init_routes(Config))}
 	}, Config).
 
-end_per_group(_Name, _) ->
-	ok. %% @todo = cowboy:stop_listener(Name).
+end_per_group(Name, _) ->
+	cowboy_test:stop_group(Name).
 
 init_routes(_) -> [
 	{"localhost", [

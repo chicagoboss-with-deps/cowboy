@@ -54,10 +54,12 @@ init_per_group(Name = h2_compress, Config) ->
 	cowboy_test:init_http2(Name, init_compress_opts(Config), Config);
 init_per_group(Name = h2c_compress, Config) ->
 	Config1 = cowboy_test:init_http(Name, init_compress_opts(Config), Config),
-	lists:keyreplace(protocol, 1, Config1, {protocol, http2}).
+	lists:keyreplace(protocol, 1, Config1, {protocol, http2});
+init_per_group(Name = h3_compress, Config) ->
+	cowboy_test:init_http3(Name, init_compress_opts(Config), Config).
 
 end_per_group(Name, _) ->
-	cowboy:stop_listener(Name).
+	cowboy_test:stop_group(Name).
 
 init_plain_opts(Config) ->
 	#{
