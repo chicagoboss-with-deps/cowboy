@@ -39,7 +39,6 @@ init_http2(Ref, ProtoOpts, Config) ->
 
 %% @todo This will probably require TransOpts as argument.
 init_http3(Ref, ProtoOpts, Config) ->
-	Port = 4567,
 	%% @todo Quicer does not currently support non-file cert/key,
 	%%       so we use quicer test certificates for now.
 	%% @todo Quicer also does not support cacerts which means
@@ -53,6 +52,7 @@ init_http3(Ref, ProtoOpts, Config) ->
 		]
 	},
 	{ok, Listener} = cowboy:start_quic(TransOpts, ProtoOpts), %% @todo Ref argument.
+	{ok, {_, Port}} = quicer:sockname(Listener),
 	%% @todo Keep listener information around in a better place.
 	persistent_term:put({cowboy_test_quic, Ref}, Listener),
 	[{ref, Ref}, {type, quic}, {protocol, http3}, {port, Port}, {opts, TransOpts}|Config].

@@ -65,6 +65,13 @@
 	%% Maximum Push ID.
 	max_push_id = -1 :: -1 | non_neg_integer(),
 
+	%% Settings are separate for each endpoint. They are sent once
+	%% at the beginning of the control stream.
+	local_settings = #{
+%		max_field_section_size => infinity
+%		enable_connect_protocol => false
+	} :: map(),
+
 	%% Currently active HTTP/3 streams. Streams may be initiated either
 	%% by the client or by the server through PUSH_PROMISE frames.
 	streams = #{} :: #{non_neg_integer() => stream()},
@@ -79,8 +86,20 @@
 
 -spec init(_, _) -> _. %% @todo
 
-init(Mode, _Opts) ->
-	{ok, cow_http3:settings(#{}), #http3_machine{mode=Mode}}.
+init(Mode, Opts) ->
+	Settings = settings_init(Opts),
+	{ok, cow_http3:settings(Settings),
+		#http3_machine{mode=Mode, local_settings=Settings}}.
+
+settings_init(Opts) ->
+	S0 = setting_from_opt(#{}, Opts, max_field_section_size, infinity),
+	setting_from_opt(S0, Opts, enable_connect_protocol, false).
+
+setting_from_opt(Settings, Opts, Name, Default) ->
+	case maps:get(Name, Opts, Default) of
+		Default -> Settings;
+		Value -> Settings#{Name => Value}
+	end.
 
 -spec init_unidi_local_streams(_, _ ,_ ,_) -> _. %% @todo
 
@@ -246,23 +265,23 @@ headers_decode({headers, EncodedFieldSection}, IsFin, Stream=#stream{id=StreamID
 
 %% @todo Much of the headers handling past this point is common between h2 and h3.
 
-headers_pseudo_headers(Stream, State,%=#http3_machine{local_settings=LocalSettings},
+headers_pseudo_headers(Stream, State=#http3_machine{local_settings=LocalSettings},
 		IsFin, Type, DecData, Headers0) when Type =:= request ->%; Type =:= push_promise ->
-%	IsExtendedConnectEnabled = maps:get(enable_connect_protocol, LocalSettings, false),
+	IsExtendedConnectEnabled = maps:get(enable_connect_protocol, LocalSettings, false),
 	case request_pseudo_headers(Headers0, #{}) of
 		%% Extended CONNECT method (RFC9220).
-%		{ok, PseudoHeaders=#{method := <<"CONNECT">>, scheme := _,
-%			authority := _, path := _, protocol := _}, Headers}
-%			when IsExtendedConnectEnabled ->
-%			headers_regular_headers(Frame, State, Type, Stream, PseudoHeaders, Headers);
-%		{ok, #{method := <<"CONNECT">>, scheme := _,
-%			authority := _, path := _}, _}
-%			when IsExtendedConnectEnabled ->
-%			headers_malformed(Stream, State,
-%				'The :protocol pseudo-header MUST be sent with an extended CONNECT. (RFC8441 4)');
+		{ok, PseudoHeaders=#{method := <<"CONNECT">>, scheme := _,
+			authority := _, path := _, protocol := _}, Headers}
+			when IsExtendedConnectEnabled ->
+			headers_regular_headers(Stream, State, IsFin, Type, DecData, PseudoHeaders, Headers);
+		{ok, #{method := <<"CONNECT">>, scheme := _,
+			authority := _, path := _}, _}
+			when IsExtendedConnectEnabled ->
+			headers_malformed(Stream, State,
+				'The :protocol pseudo-header MUST be sent with an extended CONNECT. (RFC9220, RFC8441 4)');
 		{ok, #{protocol := _}, _} ->
 			headers_malformed(Stream, State,
-				'The :protocol pseudo-header is only defined for the extended CONNECT. (RFC8441 4)');
+				'The :protocol pseudo-header is only defined for the extended CONNECT. (RFC9220, RFC8441 4)');
 		%% Normal CONNECT (no scheme/path).
 		{ok, PseudoHeaders=#{method := <<"CONNECT">>, authority := _}, Headers}
 				when map_size(PseudoHeaders) =:= 2 ->

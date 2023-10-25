@@ -338,7 +338,7 @@ headers_frame(State, Stream, IsFin, Headers, PseudoHeaders, BodyLen) ->
 
 headers_frame_parse_host(State=#state{peer=Peer, sock=Sock},
 		Stream=#stream{id=StreamID}, IsFin, Headers,
-		#{method := Method, scheme := Scheme, path := PathWithQs},
+		PseudoHeaders=#{method := Method, scheme := Scheme, path := PathWithQs},
 		BodyLen, Authority) ->
 	try cow_http_hd:parse_host(Authority) of
 		{Host, Port0} ->
@@ -348,7 +348,7 @@ headers_frame_parse_host(State=#state{peer=Peer, sock=Sock},
 					reset_stream(State, Stream, {stream_error, h3_message_error,
 						'The path component must not be empty. (RFC7540 8.1.2.3)'});
 				{Path, Qs} ->
-					Req = #{
+					Req0 = #{
 						ref => quic, %% @todo Ref,
 						pid => self(),
 						streamid => StreamID,
@@ -366,11 +366,11 @@ headers_frame_parse_host(State=#state{peer=Peer, sock=Sock},
 						has_body => IsFin =:= nofin,
 						body_length => BodyLen
 					},
-					%% We add the protocol information for extended CONNECTs. @todo
-%					Req = case PseudoHeaders of
-%						#{protocol := Protocol} -> Req1#{protocol => Protocol};
-%						_ -> Req1
-%					end,
+					%% We add the protocol information for extended CONNECTs.
+					Req = case PseudoHeaders of
+						#{protocol := Protocol} -> Req0#{protocol => Protocol};
+						_ -> Req0
+					end,
 					headers_frame(State, Stream, Req)
 			catch _:_ ->
 				reset_stream(State, Stream, {stream_error, h3_message_error,
@@ -627,17 +627,13 @@ commands(State, Stream, [Error = {internal_error, _, _}|_Tail]) ->
 	%% @todo Do we even allow commands after?
 	%% @todo Only reset when the stream still exists.
 	reset_stream(State, Stream, Error);
-%% Upgrade to HTTP/2. This is triggered by cowboy_http2 itself.
-%commands(State=#state{socket=Socket, transport=Transport, http2_status=upgrade},
-%		Stream, [{switch_protocol, Headers, ?MODULE, _}|Tail]) ->
-%	%% @todo This 101 response needs to be passed through stream handlers.
-%	Transport:send(Socket, cow_http:response(101, 'HTTP/1.1', maps:to_list(Headers))),
-%	commands(State, Stream, Tail);
 %% Use a different protocol within the stream (CONNECT :protocol).
 %% @todo Make sure we error out when the feature is disabled.
-%commands(State0, Stream, [{switch_protocol, Headers, _Mod, _ModState}|Tail]) ->
-%	State = info(State0, Stream, {headers, 200, Headers}),
-%	commands(State, Stream, Tail);
+commands(State0, Stream0=#stream{id=StreamID},
+		[{switch_protocol, Headers, _Mod, _ModState}|Tail]) ->
+	State = info(stream_store(State0, Stream0), StreamID, {headers, 200, Headers}),
+	Stream = stream_get(State, StreamID),
+	commands(State, Stream, Tail);
 %% Set options dynamically.
 commands(State, Stream, [{set_options, _Opts}|Tail]) ->
 	commands(State, Stream, Tail);

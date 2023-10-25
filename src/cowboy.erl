@@ -70,13 +70,18 @@ start_tls(Ref, TransOpts0, ProtoOpts0) ->
 start_quic(TransOpts, ProtoOpts) ->
 	{ok, _} = application:ensure_all_started(quicer),
 	Parent = self(),
-	Port = 4567,
 	SocketOpts0 = maps:get(socket_opts, TransOpts, []),
+	{Port, SocketOpts2} = case lists:keytake(port, 1, SocketOpts0) of
+		{value, {port, Port0}, SocketOpts1} ->
+			{Port0, SocketOpts1};
+		false ->
+			{port_0(), SocketOpts0}
+	end,
 	SocketOpts = [
 		{alpn, ["h3"]}, %% @todo Why not binary?
 		{peer_unidi_stream_count, 3}, %% We only need control and QPACK enc/dec.
 		{peer_bidi_stream_count, 100}
-	|SocketOpts0],
+	|SocketOpts2],
 	{ok, Listener} = quicer:listen(Port, SocketOpts),
 	ct:pal("listen ~p", [Listener]),
 	_ListenerPid = spawn(fun AcceptLoop() ->
@@ -98,6 +103,23 @@ start_quic(TransOpts, ProtoOpts) ->
 		AcceptLoop()
 	end),
 	{ok, Listener}.
+
+%% Select a random UDP port using gen_udp because quicer
+%% does not provide equivalent functionality. Taken from
+%% quicer test suites.
+port_0() ->
+	{ok, Socket} = gen_udp:open(0, [{reuseaddr, true}]),
+	{ok, {_, Port}} = inet:sockname(Socket),
+	gen_udp:close(Socket),
+	case os:type() of
+		{unix, darwin} ->
+			%% Apparently macOS doesn't free the port immediately.
+			timer:sleep(500);
+		_ ->
+			ok
+	end,
+	ct:pal("port_0: ~p", [Port]),
+	Port.
 
 -spec start_quic_test() -> ok.
 start_quic_test() ->

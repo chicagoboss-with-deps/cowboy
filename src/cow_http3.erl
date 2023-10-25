@@ -240,6 +240,13 @@ parse_settings_id_val(Rest, Len, Settings, Identifier, Value) ->
 		_ when Identifier < 6, Identifier =/= 1 ->
 			{connection_error, h3_settings_error,
 				'HTTP/2 setting not defined for HTTP/3 must be rejected. (RFC9114 7.2.4.1)'};
+		8 when Value =:= 0 ->
+			parse_settings_key_val(Rest, Len, Settings, enable_connect_protocol, false);
+		8 when Value =:= 1 ->
+			parse_settings_key_val(Rest, Len, Settings, enable_connect_protocol, true);
+		8 ->
+			{connection_error, h3_settings_error,
+				'The SETTINGS_ENABLE_CONNECT_PROTOCOL value MUST be 0 or 1. (RFC9220 3, RFC8441 3)'};
 		%% Unknown settings must be ignored.
 		_ ->
 			parse_settings_id(Rest, Len, Settings)
@@ -335,7 +342,9 @@ settings(Settings) ->
 settings_payload(Settings) ->
 	Payload = [case Key of
 		max_header_list_size when Value =:= infinity -> <<>>;
-		max_header_list_size -> [encode_int(6), encode_int(Value)]
+		max_header_list_size -> [encode_int(6), encode_int(Value)];
+		enable_connect_protocol when Value -> [encode_int(8), encode_int(1)];
+		enable_connect_protocol -> [encode_int(8), encode_int(0)]
 	end || {Key, Value} <- maps:to_list(Settings)],
 	%% Include one reserved identifier in addition.
 	ReservedType = 16#1f * (rand:uniform(148764065110560900) - 1) + 16#21,

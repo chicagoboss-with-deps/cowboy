@@ -112,7 +112,7 @@ req_stream(Config) ->
 		<<":status">> := <<"200">>,
 		<<"content-length">> := BodyLen
 	} = maps:from_list(DecodedResponse),
-	{DLenEnc, DLenBits} = do_guess_int_encoding(Data),
+	{DLenEnc, DLenBits} = do_guess_int_encoding(Rest),
 	<<
 		0, %% DATA frame.
 		DLenEnc:2, DLen:DLenBits,
@@ -2244,10 +2244,11 @@ do_connect(Config, Opts) ->
 		Opts#{alpn => ["h3"], verify => none}, 5000),
 	%% To make sure the connection is fully established we wait
 	%% to receive the SETTINGS frame on the control stream.
-	{ok, ControlRef, _Settings} = do_wait_settings(Conn),
+	{ok, ControlRef, Settings} = do_wait_settings(Conn),
 	#{
 		conn => Conn,
-		control => ControlRef %% This is the peer control stream.
+		control => ControlRef, %% This is the peer control stream.
+		settings => Settings
 	}.
 
 do_wait_settings(Conn) ->
@@ -2257,9 +2258,10 @@ do_wait_settings(Conn) ->
 			true = quicer:is_unidirectional(Flags),
 			receive {quic, <<
 				0, %% Control stream.
-				4, 0 %% Empty SETTINGS frame.
+				SettingsFrame/bits
 			>>, StreamRef, _} ->
-				{ok, StreamRef, #{}}
+				{ok, {settings, Settings}, <<>>} = cow_http3:parse(SettingsFrame),
+				{ok, StreamRef, Settings}
 			after 5000 ->
 				{error, timeout}
 			end
@@ -2330,13 +2332,18 @@ do_receive_response(StreamRef) ->
 		= cow_qpack:decode_field_section(EncodedResponse, 0, cow_qpack:init()),
 	Headers = maps:from_list(DecodedResponse),
 	#{<<"content-length">> := BodyLen} = Headers,
-	{DLenEnc, DLenBits} = do_guess_int_encoding(Data),
-	<<
-		0, %% DATA frame.
-		DLenEnc:2, DLen:DLenBits,
-		Body:DLen/bytes
-	>> = Rest,
-	BodyLen = integer_to_binary(byte_size(Body)),
+	{DLenEnc, DLenBits} = do_guess_int_encoding(Rest),
+	Body = case Rest of
+		<<>> ->
+			<<>>;
+		<<
+			0, %% DATA frame.
+			DLenEnc:2, DLen:DLenBits,
+			Body0:DLen/bytes
+		>> ->
+			BodyLen = integer_to_binary(byte_size(Body0)),
+			Body0
+	end,
 	ok = do_wait_peer_send_shutdown(StreamRef),
 	#{
 		headers => Headers,
