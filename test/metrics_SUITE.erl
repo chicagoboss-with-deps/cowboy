@@ -380,7 +380,9 @@ stream_reply(Config) ->
 ws(Config) ->
 	case config(protocol, Config) of
 		http -> do_ws(Config);
-		http2 -> doc("It is not currently possible to switch to Websocket over HTTP/2.")
+		%% @todo The test can be implemented for HTTP/2.
+		http2 -> doc("It is not currently possible to switch to Websocket over HTTP/2.");
+		http3 -> {skip, "Gun does not currently support Websocket over HTTP/3."}
 	end.
 
 do_ws(Config) ->

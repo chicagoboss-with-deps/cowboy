@@ -157,11 +157,13 @@ close_bidi_stream_for_sending(StreamID, State=#http3_machine{streams=Streams}) -
 -spec close_stream(_, _) -> _. %% @todo
 
 close_stream(StreamID, State=#http3_machine{streams=Streams0}) ->
+%	ct:pal("~p close_stream ~p ~p", [self(), StreamID, Streams0]),
 	case maps:take(StreamID, Streams0) of
 		{#stream{type=control}, Streams} ->
 			{error, {connection_error, h3_closed_critical_stream,
 				'The control stream was closed. (RFC9114 6.2.1)'},
 				State#http3_machine{streams=Streams}};
+		%% @todo We should also error out when the QPACK streams get closed.
 		{_, Streams} ->
 			{ok, State#http3_machine{streams=Streams}}
 	end.

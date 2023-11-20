@@ -21,15 +21,15 @@
 
 -include_lib("quicer/include/quicer.hrl").
 
-all() -> [{group, quic}].
+all() -> [{group, h3}].
 
 groups() ->
 	%% @todo Enable parallel tests but for this issues in the
 	%% QUIC accept loop need to be figured out (can't connect
 	%% concurrently somehow, no backlog?).
-	[{quic, [], ct_helper:all(?MODULE)}].
+	[{h3, [], ct_helper:all(?MODULE)}].
 
-init_per_group(Name = quic, Config) ->
+init_per_group(Name = h3, Config) ->
 	cowboy_test:init_http3(Name, #{
 		env => #{dispatch => cowboy_router:compile(init_routes(Config))}
 	}, Config).
@@ -50,7 +50,7 @@ alpn(Config) ->
 	doc("Successful ALPN negotiation. (RFC9114 3.1)"),
 	{ok, Conn} = quicer:connect("localhost", config(port, Config),
 		#{alpn => ["h3"], verify => none}, 5000),
-	{ok, <<"h3">>} = quicer:getopt(Conn, param_tls_negotiated_alpn, quic_tls),
+	{ok, <<"h3">>} = quicer:negotiated_protocol(Conn),
 	%% To make sure the connection is fully established we wait
 	%% to receive the SETTINGS frame on the control stream.
 	{ok, _ControlRef, _Settings} = do_wait_settings(Conn),
@@ -1219,12 +1219,20 @@ unidi_allow_at_least_three(Config) ->
 		#{open_flag => ?QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL}),
 	{ok, _} = quicer:send(DecoderRef, <<3>>),
 	%% Streams shouldn't get closed.
-	receive
-		Msg ->
-			error(Msg)
-	after 1000 ->
-		ok
-	end.
+	fun Loop() ->
+		receive
+			%% We don't care about these messages.
+			{quic, dgram_state_changed, Conn, _} ->
+				Loop();
+			{quic, peer_needs_streams, Conn, _} ->
+				Loop();
+			%% Any other we do care.
+			Msg ->
+				error(Msg)
+		after 1000 ->
+			ok
+		end
+	end().
 
 unidi_create_critical_first(Config) ->
 	doc("Endpoints should create the HTTP control stream as well as "
@@ -1495,6 +1503,8 @@ control_local_closed_abort(Config) ->
 	%% Close the control stream.
 	quicer:async_shutdown_stream(ControlRef, ?QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0),
 	%% The connection should have been closed.
+	timer:sleep(1000),
+	ct:pal("~p", [process_info(self(), messages)]),
 	#{reason := h3_closed_critical_stream} = do_wait_connection_closed(Conn),
 	ok.
 

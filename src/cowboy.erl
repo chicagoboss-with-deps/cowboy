@@ -82,27 +82,39 @@ start_quic(TransOpts, ProtoOpts) ->
 		{peer_unidi_stream_count, 3}, %% We only need control and QPACK enc/dec.
 		{peer_bidi_stream_count, 100}
 	|SocketOpts2],
-	{ok, Listener} = quicer:listen(Port, SocketOpts),
-	ct:pal("listen ~p", [Listener]),
-	_ListenerPid = spawn(fun AcceptLoop() ->
-		{ok, Conn} = quicer:accept(Listener, []),
-		ct:pal("accept ~p", [Conn]),
-		{ok, Conn} = quicer:handshake(Conn),
-		ct:pal("handshake ~p", [Conn]),
-		Pid = spawn(fun() ->
-			receive go -> ok end,
-			process_flag(trap_exit, true), %% @todo Only if supervisor though.
-			try cowboy_http3:init(Parent, Conn, ProtoOpts)
-			catch
-				exit:{shutdown,_} -> ok;
-				C:E:S -> ct:pal("CRASH ~p:~p:~p", [C,E,S])
-			end
-		end),
-		ok = quicer:controlling_process(Conn, Pid),
-		Pid ! go,
-		AcceptLoop()
+	_ListenerPid = spawn(fun() ->
+		{ok, Listener} = quicer:listen(Port, SocketOpts),
+		Parent ! {ok, Listener},
+		ct:pal("listen ~p", [Listener]),
+		_AcceptorPid = [spawn(fun AcceptLoop() ->
+			{ok, Conn} = quicer:accept(Listener, []),
+%			ct:pal("accept ~p", [Conn]),
+			Pid = spawn(fun() ->
+				receive go -> ok end,
+				%% We have to do the handshake after handing control of
+				%% the connection otherwise streams may come in before
+				%% the controlling process is changed and messages will
+				%% not be sent to the correct process.
+				{ok, Conn} = quicer:handshake(Conn),
+%				ct:pal("handshake ~p", [Conn]),
+				process_flag(trap_exit, true), %% @todo Only if supervisor though.
+				try cowboy_http3:init(Parent, Conn, ProtoOpts)
+				catch
+					exit:{shutdown,_} -> ok;
+					C:E:S -> ct:pal("CRASH ~p:~p:~p", [C,E,S])
+				end
+			end),
+			ok = quicer:controlling_process(Conn, Pid),
+			Pid ! go,
+			AcceptLoop()
+		end) || _ <- lists:seq(1, 20)],
+		%% Listener process must not terminate.
+		receive after infinity -> ok end
 	end),
-	{ok, Listener}.
+	receive
+		{ok, Listener} ->
+			{ok, Listener}
+	end.
 
 %% Select a random UDP port using gen_udp because quicer
 %% does not provide equivalent functionality. Taken from

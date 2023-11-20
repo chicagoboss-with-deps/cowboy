@@ -91,7 +91,7 @@ common_groups(Tests) ->
 		{https, Opts, Tests},
 		{h2, Opts, Tests},
 		{h2c, Opts, Tests},
-		{h3, [], Tests}, %% @todo Enable parallel when issues get fixed.
+		{h3, [parallel], Tests}, %% @todo Enable parallel when issues get fixed.
 		{http_compress, Opts, Tests},
 		{https_compress, Opts, Tests},
 		{h2_compress, Opts, Tests},

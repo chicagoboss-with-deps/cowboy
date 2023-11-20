@@ -18,6 +18,7 @@ DEPS = cowlib ranch
 dep_cowlib = git https://github.com/ninenines/cowlib qpack
 dep_ranch = git https://github.com/ninenines/ranch 1.8.0
 
+# @todo Only if COWBOY_QUICER is set.
 DEPS += quicer
 dep_quicer = git https://github.com/emqx/quic main
 
@@ -69,6 +70,11 @@ TEST_ERLC_OPTS += +'{parse_transform, eunit_autoexport}'
 # Generate rebar.config on build.
 
 app:: rebar.config
+
+# Fix quicer compilation for HTTP/3.
+
+autopatch-quicer::
+	$(verbose) printf "%s\n" "all: ;" > $(DEPS_DIR)/quicer/c_src/Makefile.erlang.mk
 
 # Dialyze the tests.
 
