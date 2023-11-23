@@ -104,13 +104,17 @@ do_get(Path, Config) ->
 do_get(Path, Headers, Config) ->
 	ConnPid = gun_open(Config),
 	Ref = gun:get(ConnPid, Path, [{<<"accept-encoding">>, <<"gzip">>}|Headers]),
-	{response, IsFin, Status, RespHeaders} = gun:await(ConnPid, Ref, infinity),
-	{ok, RespBody} = case IsFin of
-		nofin -> gun:await_body(ConnPid, Ref, infinity);
-		fin -> {ok, <<>>}
-	end,
-	gun:close(ConnPid),
-	{Status, RespHeaders, do_decode(RespHeaders, RespBody)}.
+	case gun:await(ConnPid, Ref, infinity) of
+		{response, IsFin, Status, RespHeaders} ->
+			{ok, RespBody} = case IsFin of
+				nofin -> gun:await_body(ConnPid, Ref, infinity);
+				fin -> {ok, <<>>}
+			end,
+			gun:close(ConnPid),
+			{Status, RespHeaders, do_decode(RespHeaders, RespBody)};
+		{error, {stream_error, Error}} ->
+			Error
+	end.
 
 do_get_body(Path, Config) ->
 	do_get_body(Path, [], Config).
@@ -139,7 +143,9 @@ do_get_inform(Path, Config) ->
 				fin -> {ok, <<>>}
 			end,
 			gun:close(ConnPid),
-			{InfoStatus, InfoHeaders, RespStatus, RespHeaders, do_decode(RespHeaders, RespBody)}
+			{InfoStatus, InfoHeaders, RespStatus, RespHeaders, do_decode(RespHeaders, RespBody)};
+		{error, {stream_error, Error}} ->
+			Error
 	end.
 
 do_decode(Headers, Body) ->
@@ -879,7 +885,11 @@ inform2(Config) ->
 	doc("Informational response(s) without headers, followed by the real response."),
 	{102, [], 200, _, _} = do_get_inform("/resp/inform2/102", Config),
 	{102, [], 200, _, _} = do_get_inform("/resp/inform2/binary", Config),
-	{500, _} = do_get_inform("/resp/inform2/error", Config),
+	%% Data may be lost due to how RESET_STREAM QUIC frame works.
+	case do_get_inform("/resp/inform2/error", Config) of
+		{500, _} -> ok;
+		{stream_error, h3_internal_error, _} -> ok
+	end,
 	{102, [], 200, _, _} = do_get_inform("/resp/inform2/twice", Config),
 	ok.
 
@@ -888,7 +898,11 @@ inform3(Config) ->
 	Headers = [{<<"ext-header">>, <<"ext-value">>}],
 	{102, Headers, 200, _, _} = do_get_inform("/resp/inform3/102", Config),
 	{102, Headers, 200, _, _} = do_get_inform("/resp/inform3/binary", Config),
-	{500, _} = do_get_inform("/resp/inform3/error", Config),
+	%% Data may be lost due to how RESET_STREAM QUIC frame works.
+	case do_get_inform("/resp/inform3/error", Config) of
+		{500, _} -> ok;
+		{stream_error, h3_internal_error, _} -> ok
+	end,
 	{102, Headers, 200, _, _} = do_get_inform("/resp/inform3/twice", Config),
 	ok.
 
@@ -898,7 +912,11 @@ reply2(Config) ->
 	{201, _, _} = do_get("/resp/reply2/201", Config),
 	{404, _, _} = do_get("/resp/reply2/404", Config),
 	{200, _, _} = do_get("/resp/reply2/binary", Config),
-	{500, _, _} = do_get("/resp/reply2/error", Config),
+	%% Data may be lost due to how RESET_STREAM QUIC frame works.
+	case do_get("/resp/reply2/error", Config) of
+		{500, _, _} -> ok;
+		{stream_error, h3_internal_error, _} -> ok
+	end,
 	%% @todo We want to crash when reply or stream_reply is called twice.
 	%% How to test this properly? This isn't enough.
 	{200, _, _} = do_get("/resp/reply2/twice", Config),
@@ -912,7 +930,11 @@ reply3(Config) ->
 	true = lists:keymember(<<"content-type">>, 1, Headers2),
 	{404, Headers3, _} = do_get("/resp/reply3/404", Config),
 	true = lists:keymember(<<"content-type">>, 1, Headers3),
-	{500, _, _} = do_get("/resp/reply3/error", Config),
+	%% Data may be lost due to how RESET_STREAM QUIC frame works.
+	case do_get("/resp/reply3/error", Config) of
+		{500, _, _} -> ok;
+		{stream_error, h3_internal_error, _} -> ok
+	end,
 	ok.
 
 reply4(Config) ->
@@ -920,7 +942,11 @@ reply4(Config) ->
 	{200, _, <<"OK">>} = do_get("/resp/reply4/200", Config),
 	{201, _, <<"OK">>} = do_get("/resp/reply4/201", Config),
 	{404, _, <<"OK">>} = do_get("/resp/reply4/404", Config),
-	{500, _, _} = do_get("/resp/reply4/error", Config),
+	%% Data may be lost due to how RESET_STREAM QUIC frame works.
+	case do_get("/resp/reply4/error", Config) of
+		{500, _, _} -> ok;
+		{stream_error, h3_internal_error, _} -> ok
+	end,
 	ok.
 
 %% @todo Crash when stream_reply is called twice.
@@ -932,7 +958,11 @@ stream_reply2(Config) ->
 	{201, _, Body} = do_get("/resp/stream_reply2/201", Config),
 	{404, _, Body} = do_get("/resp/stream_reply2/404", Config),
 	{200, _, Body} = do_get("/resp/stream_reply2/binary", Config),
-	{500, _, _} = do_get("/resp/stream_reply2/error", Config),
+	%% Data may be lost due to how RESET_STREAM QUIC frame works.
+	case do_get("/resp/stream_reply2/error", Config) of
+		{500, _, _} -> ok;
+		{stream_error, h3_internal_error, _} -> ok
+	end,
 	ok.
 
 stream_reply3(Config) ->
@@ -944,7 +974,11 @@ stream_reply3(Config) ->
 	true = lists:keymember(<<"content-type">>, 1, Headers2),
 	{404, Headers3, Body} = do_get("/resp/stream_reply3/404", Config),
 	true = lists:keymember(<<"content-type">>, 1, Headers3),
-	{500, _, _} = do_get("/resp/stream_reply3/error", Config),
+	%% Data may be lost due to how RESET_STREAM QUIC frame works.
+	case do_get("/resp/stream_reply3/error", Config) of
+		{500, _, _} -> ok;
+		{stream_error, h3_internal_error, _} -> ok
+	end,
 	ok.
 
 stream_body_fin0(Config) ->

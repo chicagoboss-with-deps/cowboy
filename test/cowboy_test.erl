@@ -91,12 +91,12 @@ common_groups(Tests) ->
 		{https, Opts, Tests},
 		{h2, Opts, Tests},
 		{h2c, Opts, Tests},
-		{h3, [parallel], Tests}, %% @todo Enable parallel when issues get fixed.
+		{h3, Opts, Tests},
 		{http_compress, Opts, Tests},
 		{https_compress, Opts, Tests},
 		{h2_compress, Opts, Tests},
 		{h2c_compress, Opts, Tests},
-		{h3_compress, [], Tests} %% @todo Enable parallel when issues get fixed.
+		{h3_compress, Opts, Tests}
 	].
 
 init_common_groups(Name = http, Config, Mod) ->
