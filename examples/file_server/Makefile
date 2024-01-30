@@ -5,6 +5,4 @@ PROJECT_VERSION = 1
 DEPS = cowboy jsx
 dep_cowboy_commit = master
 
-REL_DEPS = relx
-
 include ../../erlang.mk

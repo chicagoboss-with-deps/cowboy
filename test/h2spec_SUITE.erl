@@ -27,21 +27,12 @@ all() ->
 init_per_suite(Config) ->
 	case os:getenv("H2SPEC") of
 		false ->
-			{skip, "H2SPEC environment variable undefined."};
-		H2spec ->
-			case filelib:is_file(H2spec) of
-				false ->
-					{skip, "H2SPEC executable not found."};
-				true ->
-					cowboy_test:init_http(h2spec, #{
-						env => #{dispatch => init_dispatch()},
-						max_concurrent_streams => 100,
-						%% This test suite expects an HTTP/2-only connection.
-						protocols => [http2],
-						%% Disable the DATA threshold for this test suite.
-						stream_window_data_threshold => 0
-					}, Config)
-			end
+			skip;
+		_ ->
+			cowboy_test:init_http(h2spec, #{
+				env => #{dispatch => init_dispatch()},
+				max_concurrent_streams => 100
+			}, Config)
 	end.
 
 end_per_suite(_Config) ->

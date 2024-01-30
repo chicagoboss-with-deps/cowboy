@@ -50,11 +50,9 @@ init_dispatch(Name) ->
 		{"/init", ws_init_commands_h, RunOrHibernate},
 		{"/handle", ws_handle_commands_h, RunOrHibernate},
 		{"/info", ws_info_commands_h, RunOrHibernate},
-		{"/trap_exit", ws_init_h, RunOrHibernate},
 		{"/active", ws_active_commands_h, RunOrHibernate},
 		{"/deflate", ws_deflate_commands_h, RunOrHibernate},
-		{"/set_options", ws_set_options_commands_h, RunOrHibernate},
-		{"/shutdown_reason", ws_shutdown_reason_commands_h, RunOrHibernate}
+		{"/set_options", ws_set_options_commands_h, RunOrHibernate}
 	]}]).
 
 %% Support functions for testing using Gun.
@@ -83,9 +81,9 @@ receive_ws(ConnPid, StreamRef) ->
 		{error, timeout}
 	end.
 
-ensure_handle_is_called(ConnPid, StreamRef, "/handle") ->
-	gun:ws_send(ConnPid, StreamRef, {text, <<"Necessary to trigger websocket_handle/2.">>});
-ensure_handle_is_called(_, _, _) ->
+ensure_handle_is_called(ConnPid, "/handle") ->
+	gun:ws_send(ConnPid, {text, <<"Necessary to trigger websocket_handle/2.">>});
+ensure_handle_is_called(_, _) ->
 	ok.
 
 %% Tests.
@@ -104,7 +102,7 @@ websocket_info_nothing(Config) ->
 
 do_nothing(Config, Path) ->
 	{ok, ConnPid, StreamRef} = gun_open_ws(Config, Path, []),
-	ensure_handle_is_called(ConnPid, StreamRef, Path),
+	ensure_handle_is_called(ConnPid, Path),
 	{error, timeout} = receive_ws(ConnPid, StreamRef),
 	ok.
 
@@ -121,8 +119,8 @@ websocket_info_invalid(Config) ->
 	do_invalid(Config, "/info").
 
 do_invalid(Config, Path) ->
-	{ok, ConnPid, StreamRef} = gun_open_ws(Config, Path, bad),
-	ensure_handle_is_called(ConnPid, StreamRef, Path),
+	{ok, ConnPid, _} = gun_open_ws(Config, Path, bad),
+	ensure_handle_is_called(ConnPid, Path),
 	gun_down(ConnPid).
 
 websocket_init_one_frame(Config) ->
@@ -141,7 +139,7 @@ do_one_frame(Config, Path) ->
 	{ok, ConnPid, StreamRef} = gun_open_ws(Config, Path, [
 		{text, <<"One frame!">>}
 	]),
-	ensure_handle_is_called(ConnPid, StreamRef, Path),
+	ensure_handle_is_called(ConnPid, Path),
 	{ok, {text, <<"One frame!">>}} = receive_ws(ConnPid, StreamRef),
 	ok.
 
@@ -162,7 +160,7 @@ do_many_frames(Config, Path) ->
 		{text, <<"One frame!">>},
 		{binary, <<"Two frames!">>}
 	]),
-	ensure_handle_is_called(ConnPid, StreamRef, Path),
+	ensure_handle_is_called(ConnPid, Path),
 	{ok, {text, <<"One frame!">>}} = receive_ws(ConnPid, StreamRef),
 	{ok, {binary, <<"Two frames!">>}} = receive_ws(ConnPid, StreamRef),
 	ok.
@@ -181,7 +179,7 @@ websocket_info_close_frame(Config) ->
 
 do_close_frame(Config, Path) ->
 	{ok, ConnPid, StreamRef} = gun_open_ws(Config, Path, [close]),
-	ensure_handle_is_called(ConnPid, StreamRef, Path),
+	ensure_handle_is_called(ConnPid, Path),
 	{ok, close} = receive_ws(ConnPid, StreamRef),
 	gun_down(ConnPid).
 
@@ -206,24 +204,17 @@ do_many_frames_then_close_frame(Config, Path) ->
 		{binary, <<"Two frames!">>},
 		close
 	]),
-	ensure_handle_is_called(ConnPid, StreamRef, Path),
+	ensure_handle_is_called(ConnPid, Path),
 	{ok, {text, <<"One frame!">>}} = receive_ws(ConnPid, StreamRef),
 	{ok, {binary, <<"Two frames!">>}} = receive_ws(ConnPid, StreamRef),
 	{ok, close} = receive_ws(ConnPid, StreamRef),
 	gun_down(ConnPid).
 
-websocket_init_trap_exit_false(Config) ->
-	doc("The trap_exit process flag must be set back to false before "
-		"the connection is taken over by Websocket."),
-	{ok, ConnPid, StreamRef} = gun_open_ws(Config, "/trap_exit?reply_trap_exit", []),
-	{ok, {text, <<"trap_exit: false">>}} = receive_ws(ConnPid, StreamRef),
-	ok.
-
 websocket_active_false(Config) ->
 	doc("The {active, false} command stops receiving data from the socket. "
 		"The {active, true} command reenables it."),
 	{ok, ConnPid, StreamRef} = gun_open_ws(Config, "/active", []),
-	gun:ws_send(ConnPid, StreamRef, {text, <<"Not received until the handler enables active again.">>}),
+	gun:ws_send(ConnPid, {text, <<"Not received until the handler enables active again.">>}),
 	{error, timeout} = receive_ws(ConnPid, StreamRef),
 	{ok, {text, <<"Not received until the handler enables active again.">>}}
 		= receive_ws(ConnPid, StreamRef),
@@ -263,7 +254,7 @@ websocket_deflate_ignore_if_not_negotiated(Config) ->
 		"when compression was not negotiated."),
 	{ok, ConnPid, StreamRef} = gun_open_ws(Config, "/deflate", []),
 	_ = [begin
-		gun:ws_send(ConnPid, StreamRef, {text, <<"Hello.">>}),
+		gun:ws_send(ConnPid, {text, <<"Hello.">>}),
 		{ok, {text, <<"Hello.">>}} = receive_ws(ConnPid, StreamRef)
 	end || _ <- lists:seq(1, 10)],
 	ok.
@@ -288,28 +279,10 @@ websocket_set_options_idle_timeout(Config) ->
 	{error, timeout} = gun:await(ConnPid, StreamRef, 2000),
 	%% Trigger the change in idle_timeout and confirm that
 	%% the connection gets closed soon after.
-	gun:ws_send(ConnPid, StreamRef, {text, <<"idle_timeout_short">>}),
+	gun:ws_send(ConnPid, {text, <<"idle_timeout_short">>}),
 	receive
-		{gun_down, ConnPid, _, _, _} ->
+		{gun_down, ConnPid, _, _, _, _} ->
 			ok
 	after 2000 ->
-		error(timeout)
-	end.
-
-websocket_shutdown_reason(Config) ->
-	doc("The command {shutdown_reason, any()} can be used to "
-		"change the shutdown reason of a Websocket connection."),
-	ConnPid = gun_open(Config),
-	StreamRef = gun:ws_upgrade(ConnPid, "/shutdown_reason", [
-		{<<"x-test-pid">>, pid_to_list(self())}
-	]),
-	{upgrade, [<<"websocket">>], _} = gun:await(ConnPid, StreamRef),
-	WsPid = receive {ws_pid, P} -> P after 1000 -> error(timeout) end,
-	MRef = monitor(process, WsPid),
-	WsPid ! {self(), {?MODULE, ?FUNCTION_NAME}},
-	receive
-		{'DOWN', MRef, process, WsPid, {shutdown, {?MODULE, ?FUNCTION_NAME}}} ->
-			ok
-	after 1000 ->
 		error(timeout)
 	end.

@@ -22,6 +22,7 @@
 -import(ct_helper, [get_remote_pid_tcp/1]).
 -import(ct_helper, [get_remote_pid_tls/1]).
 -import(ct_helper, [is_process_down/1]).
+-import(cowboy_test, [gun_open/1]).
 
 all() ->
 	[{group, sys}].
@@ -108,8 +109,7 @@ bad_system_from_h1(Config) ->
 bad_system_from_h2(Config) ->
 	doc("h2: Sending a system message with a bad From value results in a process crash."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
 	%% Skip the SETTINGS frame.
 	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
 	timer:sleep(100),
@@ -176,8 +176,7 @@ bad_system_message_h1(Config) ->
 bad_system_message_h2(Config) ->
 	doc("h2: Sending a system message with a bad Request value results in an error."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
 	%% Skip the SETTINGS frame.
 	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
 	timer:sleep(100),
@@ -253,8 +252,7 @@ good_system_message_h1(Config) ->
 good_system_message_h2(Config) ->
 	doc("h2: System messages are handled properly."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
 	%% Skip the SETTINGS frame.
 	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
 	timer:sleep(100),
@@ -338,8 +336,7 @@ trap_exit_parent_exit_h2(Config) ->
 	doc("h2: A process trapping exits must stop when receiving "
 		"an 'EXIT' message from its parent."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
 	%% Skip the SETTINGS frame.
 	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
 	timer:sleep(100),
@@ -411,9 +408,13 @@ trap_exit_other_exit_h2(Config) ->
 	doc("h2: A process trapping exits must ignore "
 		"'EXIT' messages from unknown processes."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
-	do_http2_handshake(Socket),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
+	%% Do the handshake.
+	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
+	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
+	ok = ssl:send(Socket, cow_http2:settings_ack()),
+	{ok, << 0:24, 4:8, 1:8, 0:32 >>} = ssl:recv(Socket, 9, 1000),
+	timer:sleep(100),
 	Pid = get_remote_pid_tls(Socket),
 	Pid ! {'EXIT', self(), {shutdown, ?MODULE}},
 	%% Send a HEADERS frame as a request.
@@ -530,10 +531,18 @@ sys_change_code_h1(Config) ->
 sys_change_code_h2(Config) ->
 	doc("h2: The sys:change_code/4 function works as expected."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
-	do_http2_handshake(Socket),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
+	timer:sleep(100),
 	Pid = get_remote_pid_tls(Socket),
+	%% Send a valid preface.
+	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
+	%% Receive the server preface.
+	{ok, << Len:24 >>} = ssl:recv(Socket, 3, 1000),
+	{ok, << 4:8, 0:40, _:Len/binary >>} = ssl:recv(Socket, 6 + Len, 1000),
+	%% Send the SETTINGS ack.
+	ok = ssl:send(Socket, cow_http2:settings_ack()),
+	%% Receive the SETTINGS ack.
+	{ok, << 0:24, 4:8, 1:8, 0:32 >>} = ssl:recv(Socket, 9, 1000),
 	%% Suspend the process and try to get a request in. The
 	%% response will not come back until we resume the process.
 	ok = sys:suspend(Pid),
@@ -607,15 +616,15 @@ sys_get_state_h1(Config) ->
 	{ok, Socket} = gen_tcp:connect("localhost", config(clear_port, Config), []),
 	timer:sleep(100),
 	Pid = get_remote_pid_tcp(Socket),
-	State = sys:get_state(Pid),
+	{State, Buffer} = sys:get_state(Pid),
 	state = element(1, State),
+	true = is_binary(Buffer),
 	ok.
 
 sys_get_state_h2(Config) ->
 	doc("h2: The sys:get_state/1 function works as expected."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
 	%% Skip the SETTINGS frame.
 	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
 	timer:sleep(100),
@@ -659,7 +668,7 @@ sys_get_state_loop(Config) ->
 	timer:sleep(100),
 	SupPid = get_remote_pid_tcp(Socket),
 	[{_, Pid, _, _}] = supervisor:which_children(SupPid),
-	{Req, Env, long_polling_sys_h, undefined, infinity} = sys:get_state(Pid),
+	{Req, Env, long_polling_sys_h, undefined} = sys:get_state(Pid),
 	#{pid := _, streamid := _} = Req,
 	#{dispatch := _} = Env,
 	ok.
@@ -677,8 +686,7 @@ sys_get_status_h1(Config) ->
 sys_get_status_h2(Config) ->
 	doc("h2: The sys:get_status/1 function works as expected."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
 	%% Skip the SETTINGS frame.
 	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
 	timer:sleep(100),
@@ -732,15 +740,15 @@ sys_replace_state_h1(Config) ->
 	{ok, Socket} = gen_tcp:connect("localhost", config(clear_port, Config), []),
 	timer:sleep(100),
 	Pid = get_remote_pid_tcp(Socket),
-	State = sys:replace_state(Pid, fun(S) -> S end),
+	{State, Buffer} = sys:replace_state(Pid, fun(S) -> S end),
 	state = element(1, State),
+	true = is_binary(Buffer),
 	ok.
 
 sys_replace_state_h2(Config) ->
 	doc("h2: The sys:replace_state/2 function works as expected."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
 	%% Skip the SETTINGS frame.
 	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
 	timer:sleep(100),
@@ -784,7 +792,7 @@ sys_replace_state_loop(Config) ->
 	timer:sleep(100),
 	SupPid = get_remote_pid_tcp(Socket),
 	[{_, Pid, _, _}] = supervisor:which_children(SupPid),
-	{Req, Env, long_polling_sys_h, undefined, infinity} = sys:replace_state(Pid, fun(S) -> S end),
+	{Req, Env, long_polling_sys_h, undefined} = sys:replace_state(Pid, fun(S) -> S end),
 	#{pid := _, streamid := _} = Req,
 	#{dispatch := _} = Env,
 	ok.
@@ -809,10 +817,18 @@ sys_suspend_and_resume_h1(Config) ->
 sys_suspend_and_resume_h2(Config) ->
 	doc("h2: The sys:suspend/1 and sys:resume/1 functions work as expected."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
-	do_http2_handshake(Socket),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
+	timer:sleep(100),
 	Pid = get_remote_pid_tls(Socket),
+	%% Send a valid preface.
+	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
+	%% Receive the server preface.
+	{ok, << Len:24 >>} = ssl:recv(Socket, 3, 1000),
+	{ok, << 4:8, 0:40, _:Len/binary >>} = ssl:recv(Socket, 6 + Len, 1000),
+	%% Send the SETTINGS ack.
+	ok = ssl:send(Socket, cow_http2:settings_ack()),
+	%% Receive the SETTINGS ack.
+	{ok, << 0:24, 4:8, 1:8, 0:32 >>} = ssl:recv(Socket, 9, 1000),
 	%% Suspend the process and try to get a request in. The
 	%% response will not come back until we resume the process.
 	ok = sys:suspend(Pid),
@@ -889,8 +905,7 @@ sys_terminate_h1(Config) ->
 sys_terminate_h2(Config) ->
 	doc("h2: The sys:terminate/2,3 function works as expected."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
 	%% Skip the SETTINGS frame.
 	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
 	timer:sleep(100),
@@ -993,9 +1008,13 @@ supervisor_count_children_h1(Config) ->
 supervisor_count_children_h2(Config) ->
 	doc("h2: The function supervisor:count_children/1 must work."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
-	do_http2_handshake(Socket),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
+	%% Do the handshake.
+	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
+	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
+	ok = ssl:send(Socket, cow_http2:settings_ack()),
+	{ok, << 0:24, 4:8, 1:8, 0:32 >>} = ssl:recv(Socket, 9, 1000),
+	timer:sleep(100),
 	Pid = get_remote_pid_tls(Socket),
 	%% No request was sent so there's no children.
 	Counts1 = supervisor:count_children(Pid),
@@ -1066,9 +1085,13 @@ supervisor_delete_child_not_found_h1(Config) ->
 supervisor_delete_child_not_found_h2(Config) ->
 	doc("h2: The function supervisor:delete_child/2 must return {error, not_found}."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
-	do_http2_handshake(Socket),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
+	%% Do the handshake.
+	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
+	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
+	ok = ssl:send(Socket, cow_http2:settings_ack()),
+	{ok, << 0:24, 4:8, 1:8, 0:32 >>} = ssl:recv(Socket, 9, 1000),
+	timer:sleep(100),
 	Pid = get_remote_pid_tls(Socket),
 	%% When no children exist.
 	{error, not_found} = supervisor:delete_child(Pid, cowboy_http2),
@@ -1126,9 +1149,13 @@ supervisor_get_childspec_not_found_h1(Config) ->
 supervisor_get_childspec_not_found_h2(Config) ->
 	doc("h2: The function supervisor:get_childspec/2 must return {error, not_found}."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
-	do_http2_handshake(Socket),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
+	%% Do the handshake.
+	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
+	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
+	ok = ssl:send(Socket, cow_http2:settings_ack()),
+	{ok, << 0:24, 4:8, 1:8, 0:32 >>} = ssl:recv(Socket, 9, 1000),
+	timer:sleep(100),
 	Pid = get_remote_pid_tls(Socket),
 	%% When no children exist.
 	{error, not_found} = supervisor:get_childspec(Pid, cowboy_http2),
@@ -1186,9 +1213,13 @@ supervisor_restart_child_not_found_h1(Config) ->
 supervisor_restart_child_not_found_h2(Config) ->
 	doc("h2: The function supervisor:restart_child/2 must return {error, not_found}."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
-	do_http2_handshake(Socket),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
+	%% Do the handshake.
+	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
+	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
+	ok = ssl:send(Socket, cow_http2:settings_ack()),
+	{ok, << 0:24, 4:8, 1:8, 0:32 >>} = ssl:recv(Socket, 9, 1000),
+	timer:sleep(100),
 	Pid = get_remote_pid_tls(Socket),
 	%% When no children exist.
 	{error, not_found} = supervisor:restart_child(Pid, cowboy_http2),
@@ -1241,9 +1272,13 @@ supervisor_start_child_not_found_h1(Config) ->
 supervisor_start_child_not_found_h2(Config) ->
 	doc("h2: The function supervisor:start_child/2 must return {error, start_child_disabled}."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
-	do_http2_handshake(Socket),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
+	%% Do the handshake.
+	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
+	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
+	ok = ssl:send(Socket, cow_http2:settings_ack()),
+	{ok, << 0:24, 4:8, 1:8, 0:32 >>} = ssl:recv(Socket, 9, 1000),
+	timer:sleep(100),
 	Pid = get_remote_pid_tls(Socket),
 	{error, start_child_disabled} = supervisor:start_child(Pid, #{
 		id => error,
@@ -1296,9 +1331,13 @@ supervisor_terminate_child_not_found_h1(Config) ->
 supervisor_terminate_child_not_found_h2(Config) ->
 	doc("h2: The function supervisor:terminate_child/2 must return {error, not_found}."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
-	do_http2_handshake(Socket),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
+	%% Do the handshake.
+	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
+	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
+	ok = ssl:send(Socket, cow_http2:settings_ack()),
+	{ok, << 0:24, 4:8, 1:8, 0:32 >>} = ssl:recv(Socket, 9, 1000),
+	timer:sleep(100),
 	Pid = get_remote_pid_tls(Socket),
 	%% When no children exist.
 	{error, not_found} = supervisor:terminate_child(Pid, cowboy_http2),
@@ -1360,9 +1399,13 @@ supervisor_which_children_h1(Config) ->
 supervisor_which_children_h2(Config) ->
 	doc("h2: The function supervisor:which_children/1 must work."),
 	{ok, Socket} = ssl:connect("localhost", config(tls_port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			{active, false}, binary|config(tls_opts, Config)]),
-	do_http2_handshake(Socket),
+		[{active, false}, binary, {alpn_advertised_protocols, [<<"h2">>]}]),
+	%% Do the handshake.
+	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
+	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
+	ok = ssl:send(Socket, cow_http2:settings_ack()),
+	{ok, << 0:24, 4:8, 1:8, 0:32 >>} = ssl:recv(Socket, 9, 1000),
+	timer:sleep(100),
 	Pid = get_remote_pid_tls(Socket),
 	%% No request was sent so there's no children.
 	[] = supervisor:which_children(Pid),
@@ -1398,13 +1441,4 @@ supervisor_which_children_ws(Config) ->
 	timer:sleep(100),
 	Pid = get_remote_pid_tcp(Socket),
 	[] = supervisor:which_children(Pid),
-	ok.
-
-%% Internal.
-
-do_http2_handshake(Socket) ->
-	ok = ssl:send(Socket, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"),
-	{ok, <<_,_,_,4,_/bits>>} = ssl:recv(Socket, 0, 1000),
-	ok = ssl:send(Socket, [cow_http2:settings(#{}), cow_http2:settings_ack()]),
-	{ok, << 0:24, 4:8, 1:8, 0:32 >>} = ssl:recv(Socket, 9, 1000),
 	ok.

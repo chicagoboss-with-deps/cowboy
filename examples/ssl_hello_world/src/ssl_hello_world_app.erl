@@ -26,4 +26,4 @@ start(_Type, _Args) ->
 	ssl_hello_world_sup:start_link().
 
 stop(_State) ->
-	ok = cowboy:stop_listener(https).
+	ok.

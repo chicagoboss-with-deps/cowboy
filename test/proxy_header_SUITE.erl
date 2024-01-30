@@ -71,30 +71,6 @@ init_dispatch() ->
 
 %% Tests.
 
-fail_gracefully_on_disconnect(Config) ->
-	doc("Probing a port must not generate a crash"),
-	{ok, Socket} = gen_tcp:connect("localhost", config(port, Config),
-		[binary, {active, false}, {packet, raw}]),
-	timer:sleep(50),
-	Pid = case config(type, Config) of
-		tcp -> ct_helper:get_remote_pid_tcp(Socket);
-		%% We connect to a TLS port using a TCP socket so we need
-		%% to first obtain the remote pid of the TCP socket, which
-		%% is a TLS socket on the server, and then get the real
-		%% remote pid from its state.
-		ssl -> ct_helper:get_remote_pid_tls_state(ct_helper:get_remote_pid_tcp(Socket))
-	end,
-	Ref = erlang:monitor(process, Pid),
-	gen_tcp:close(Socket),
-	receive
-		{'DOWN', Ref, process, Pid, {shutdown, closed}} ->
-			ok;
-		{'DOWN', Ref, process, Pid, Reason} ->
-			error(Reason)
-	after 500 ->
-		error(timeout)
-	end.
-
 v1_proxy_header(Config) ->
 	doc("Confirm we can read the proxy header at the start of the connection."),
 	ProxyInfo = #{
@@ -150,8 +126,7 @@ do_proxy_header_https(Config, ProxyInfo) ->
 	{ok, Socket0} = gen_tcp:connect("localhost", config(port, Config),
 		[binary, {active, false}, {packet, raw}]),
 	ok = gen_tcp:send(Socket0, ranch_proxy_header:header(ProxyInfo)),
-	TlsOpts = ct_helper:get_certs_from_ets(),
-	{ok, Socket} = ssl:connect(Socket0, TlsOpts, 1000),
+	{ok, Socket} = ssl:connect(Socket0, [], 1000),
 	do_proxy_header_http_common({raw_client, Socket, ssl}, ProxyInfo).
 
 do_proxy_header_http_common(Client, ProxyInfo) ->
@@ -176,9 +151,7 @@ do_proxy_header_h2(Config, ProxyInfo) ->
 	{ok, Socket0} = gen_tcp:connect("localhost", config(port, Config),
 		[binary, {active, false}, {packet, raw}]),
 	ok = gen_tcp:send(Socket0, ranch_proxy_header:header(ProxyInfo)),
-	TlsOpts = ct_helper:get_certs_from_ets(),
-	{ok, Socket} = ssl:connect(Socket0,
-		[{alpn_advertised_protocols, [<<"h2">>]}|TlsOpts], 1000),
+	{ok, Socket} = ssl:connect(Socket0, [{alpn_advertised_protocols, [<<"h2">>]}], 1000),
 	do_proxy_header_h2_common({raw_client, Socket, ssl}, ProxyInfo).
 
 do_proxy_header_h2c(Config, ProxyInfo) ->

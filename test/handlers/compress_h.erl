@@ -11,23 +11,19 @@ init(Req0, State=reply) ->
 			cowboy_req:reply(200, #{}, lists:duplicate(100, $a), Req0);
 		<<"large">> ->
 			cowboy_req:reply(200, #{}, lists:duplicate(100000, $a), Req0);
-		<<"vary">> ->
-			Vary = cowboy_req:header(<<"x-test-vary">>, Req0),
-			cowboy_req:reply(200, #{<<"vary">> => Vary}, lists:duplicate(100000, $a), Req0);
 		<<"over-threshold">> ->
 			cowboy_req:reply(200, #{}, lists:duplicate(200, $a), Req0);
 		<<"content-encoding">> ->
 			cowboy_req:reply(200, #{<<"content-encoding">> => <<"compress">>},
-				lists:duplicate(100000, $a), Req0);
-		<<"etag">> ->
-			cowboy_req:reply(200, #{<<"etag">> => <<"\"STRONK\"">>},
 				lists:duplicate(100000, $a), Req0);
 		<<"sendfile">> ->
 			AppFile = code:where_is_file("cowboy.app"),
 			Size = filelib:file_size(AppFile),
 			cowboy_req:reply(200, #{}, {sendfile, 0, Size, AppFile}, Req0);
 		<<"set_options_threshold0">> ->
-			cowboy_req:cast({set_options, #{compress_threshold => 0}}, Req0),
+			%% @todo This should be replaced by a cowboy_req:cast/cowboy_stream:cast.
+			#{pid := Pid, streamid := StreamID} = Req0,
+			Pid ! {{Pid, StreamID}, {set_options, #{compress_threshold => 0}}},
 			cowboy_req:reply(200, #{}, lists:duplicate(100, $a), Req0)
 	end,
 	{ok, Req, State};
@@ -37,8 +33,6 @@ init(Req0, State=stream_reply) ->
 			stream_reply(#{}, Req0);
 		<<"content-encoding">> ->
 			stream_reply(#{<<"content-encoding">> => <<"compress">>}, Req0);
-		<<"etag">> ->
-			stream_reply(#{<<"etag">> => <<"\"STRONK\"">>}, Req0);
 		<<"sendfile">> ->
 			Data = lists:duplicate(10000, $a),
 			AppFile = code:where_is_file("cowboy.app"),
@@ -65,10 +59,14 @@ init(Req0, State=stream_reply) ->
 		<<"delayed">> ->
 			stream_delayed(Req0);
 		<<"set_options_buffering_false">> ->
-			cowboy_req:cast({set_options, #{compress_buffering => false}}, Req0),
+			%% @todo This should be replaced by a cowboy_req:cast/cowboy_stream:cast.
+			#{pid := Pid, streamid := StreamID} = Req0,
+			Pid ! {{Pid, StreamID}, {set_options, #{compress_buffering => false}}},
 			stream_delayed(Req0);
 		<<"set_options_buffering_true">> ->
-			cowboy_req:cast({set_options, #{compress_buffering => true}}, Req0),
+			%% @todo This should be replaced by a cowboy_req:cast/cowboy_stream:cast.
+			#{pid := Pid, streamid := StreamID} = Req0,
+			Pid ! {{Pid, StreamID}, {set_options, #{compress_buffering => true}}},
 			stream_delayed(Req0)
 	end,
 	{ok, Req, State}.

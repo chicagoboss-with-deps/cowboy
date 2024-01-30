@@ -12,19 +12,12 @@
 %% ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 %% OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-%% Note that Cowboy does not implement the PRIORITY mechanism.
-%% Everyone has been moving away from it and it is widely seen
-%% as a failure. Setting priorities has been counter productive
-%% with regards to performance. Clients have been moving away
-%% from the mechanism.
-
 -module(rfc7540_SUITE).
 -compile(export_all).
 -compile(nowarn_export_all).
 
 -import(ct_helper, [config/2]).
 -import(ct_helper, [doc/1]).
--import(ct_helper, [get_remote_pid_tcp/1]).
 -import(cowboy_test, [gun_open/1]).
 -import(cowboy_test, [raw_open/1]).
 -import(cowboy_test, [raw_send/2]).
@@ -40,16 +33,12 @@ groups() ->
 	[{clear, [parallel], Clear}, {tls, [parallel], TLS}].
 
 init_per_group(Name = clear, Config) ->
-	[{protocol, http2}|cowboy_test:init_http(Name, #{
-		env => #{dispatch => cowboy_router:compile(init_routes(Config))},
-		%% Disable the DATA threshold for this test suite.
-		stream_window_data_threshold => 0
-	}, Config)];
+	cowboy_test:init_http(Name, #{
+		env => #{dispatch => cowboy_router:compile(init_routes(Config))}
+	}, Config);
 init_per_group(Name = tls, Config) ->
 	cowboy_test:init_http2(Name, #{
-		env => #{dispatch => cowboy_router:compile(init_routes(Config))},
-		%% Disable the DATA threshold for this test suite.
-		stream_window_data_threshold => 0
+		env => #{dispatch => cowboy_router:compile(init_routes(Config))}
 	}, Config).
 
 end_per_group(Name, _) ->
@@ -59,9 +48,7 @@ init_routes(_) -> [
 	{"localhost", [
 		{"/", hello_h, []},
 		{"/echo/:key", echo_h, []},
-		{"/delay_hello", delay_hello_h, 1200},
 		{"/long_polling", long_polling_h, []},
-		{"/loop_handler_abort", loop_handler_abort_h, []},
 		{"/resp/:key[/:arg]", resp_h, []}
 	]}
 ].
@@ -489,6 +476,14 @@ http_upgrade_client_preface_settings_ack_timeout(Config) ->
 %%   important, an OPTIONS request can be used to perform the upgrade to
 %%   HTTP/2, at the cost of an additional round trip.
 
+%% @todo If we ever handle priority, we need to check that the initial
+%% HTTP/1.1 request has default priority. The relevant RFC quote is:
+%%
+%% 3.2
+%%   The HTTP/1.1 request that is sent prior to upgrade is assigned a
+%%   stream identifier of 1 (see Section 5.1.1) with default priority
+%%   values (Section 5.3.5).
+
 http_upgrade_response(Config) ->
 	doc("A response must be sent to the initial HTTP/1.1 request "
 		"after switching to HTTP/2. The response must use "
@@ -587,20 +582,16 @@ http_upgrade_response_half_closed(Config) ->
 
 alpn_ignore_h2c(Config) ->
 	doc("An h2c ALPN protocol identifier must be ignored. (RFC7540 3.3)"),
-	TlsOpts = ct_helper:get_certs_from_ets(),
 	{ok, Socket} = ssl:connect("localhost", config(port, Config),
-		[{alpn_advertised_protocols, [<<"h2c">>, <<"http/1.1">>]},
-			binary, {active, false}|TlsOpts]),
+		[{alpn_advertised_protocols, [<<"h2c">>, <<"http/1.1">>]}, binary, {active, false}]),
 	{ok, <<"http/1.1">>} = ssl:negotiated_protocol(Socket),
 	ok.
 
 alpn_server_preface(Config) ->
 	doc("The first frame must be a SETTINGS frame "
 		"for the server connection preface. (RFC7540 3.3, RFC7540 3.5, RFC7540 6.5)"),
-	TlsOpts = ct_helper:get_certs_from_ets(),
 	{ok, Socket} = ssl:connect("localhost", config(port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			binary, {active, false}|TlsOpts]),
+		[{alpn_advertised_protocols, [<<"h2">>]}, binary, {active, false}]),
 	{ok, <<"h2">>} = ssl:negotiated_protocol(Socket),
 	%% Receive the server preface.
 	{ok, << _:24, 4:8, 0:40 >>} = ssl:recv(Socket, 9, 1000),
@@ -609,10 +600,8 @@ alpn_server_preface(Config) ->
 alpn_client_preface_timeout(Config) ->
 	doc("Clients negotiating HTTP/2 and not sending a preface in "
 		"a timely manner must be disconnected."),
-	TlsOpts = ct_helper:get_certs_from_ets(),
 	{ok, Socket} = ssl:connect("localhost", config(port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			binary, {active, false}|TlsOpts]),
+		[{alpn_advertised_protocols, [<<"h2">>]}, binary, {active, false}]),
 	{ok, <<"h2">>} = ssl:negotiated_protocol(Socket),
 	%% Receive the server preface.
 	{ok, << Len:24 >>} = ssl:recv(Socket, 3, 1000),
@@ -624,10 +613,8 @@ alpn_client_preface_timeout(Config) ->
 alpn_reject_missing_client_preface(Config) ->
 	doc("Servers must treat an invalid connection preface as a "
 		"connection error of type PROTOCOL_ERROR. (RFC7540 3.3, RFC7540 3.5)"),
-	TlsOpts = ct_helper:get_certs_from_ets(),
 	{ok, Socket} = ssl:connect("localhost", config(port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			binary, {active, false}|TlsOpts]),
+		[{alpn_advertised_protocols, [<<"h2">>]}, binary, {active, false}]),
 	{ok, <<"h2">>} = ssl:negotiated_protocol(Socket),
 	%% Send a SETTINGS frame directly instead of the proper preface.
 	ok = ssl:send(Socket, cow_http2:settings(#{})),
@@ -641,10 +628,8 @@ alpn_reject_missing_client_preface(Config) ->
 alpn_reject_invalid_client_preface(Config) ->
 	doc("Servers must treat an invalid connection preface as a "
 		"connection error of type PROTOCOL_ERROR. (RFC7540 3.3, RFC7540 3.5)"),
-	TlsOpts = ct_helper:get_certs_from_ets(),
 	{ok, Socket} = ssl:connect("localhost", config(port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			binary, {active, false}|TlsOpts]),
+		[{alpn_advertised_protocols, [<<"h2">>]}, binary, {active, false}]),
 	{ok, <<"h2">>} = ssl:negotiated_protocol(Socket),
 	%% Send a slightly incorrect preface.
 	ok = ssl:send(Socket, "PRI * HTTP/2.0\r\n\r\nSM: Value\r\n\r\n"),
@@ -658,10 +643,8 @@ alpn_reject_invalid_client_preface(Config) ->
 alpn_reject_missing_client_preface_settings(Config) ->
 	doc("Servers must treat an invalid connection preface as a "
 		"connection error of type PROTOCOL_ERROR. (RFC7540 3.3, RFC7540 3.5)"),
-	TlsOpts = ct_helper:get_certs_from_ets(),
 	{ok, Socket} = ssl:connect("localhost", config(port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			binary, {active, false}|TlsOpts]),
+		[{alpn_advertised_protocols, [<<"h2">>]}, binary, {active, false}]),
 	{ok, <<"h2">>} = ssl:negotiated_protocol(Socket),
 	%% Send a valid preface sequence except followed by a PING instead of a SETTINGS frame.
 	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:ping(0)]),
@@ -675,10 +658,8 @@ alpn_reject_missing_client_preface_settings(Config) ->
 alpn_reject_invalid_client_preface_settings(Config) ->
 	doc("Servers must treat an invalid connection preface as a "
 		"connection error of type PROTOCOL_ERROR. (RFC7540 3.3, RFC7540 3.5)"),
-	TlsOpts = ct_helper:get_certs_from_ets(),
 	{ok, Socket} = ssl:connect("localhost", config(port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			binary, {active, false}|TlsOpts]),
+		[{alpn_advertised_protocols, [<<"h2">>]}, binary, {active, false}]),
 	{ok, <<"h2">>} = ssl:negotiated_protocol(Socket),
 	%% Send a valid preface sequence except followed by a badly formed SETTINGS frame.
 	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", << 0:24, 4:8, 0:9, 1:31 >>]),
@@ -691,10 +672,8 @@ alpn_reject_invalid_client_preface_settings(Config) ->
 
 alpn_accept_client_preface_empty_settings(Config) ->
 	doc("The SETTINGS frame in the client preface may be empty. (RFC7540 3.3, RFC7540 3.5)"),
-	TlsOpts = ct_helper:get_certs_from_ets(),
 	{ok, Socket} = ssl:connect("localhost", config(port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			binary, {active, false}|TlsOpts]),
+		[{alpn_advertised_protocols, [<<"h2">>]}, binary, {active, false}]),
 	{ok, <<"h2">>} = ssl:negotiated_protocol(Socket),
 	%% Send a valid preface sequence except followed by an empty SETTINGS frame.
 	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
@@ -708,10 +687,8 @@ alpn_accept_client_preface_empty_settings(Config) ->
 alpn_client_preface_settings_ack_timeout(Config) ->
 	doc("Failure to acknowledge the server's SETTINGS frame "
 		"results in a SETTINGS_TIMEOUT connection error. (RFC7540 3.5, RFC7540 6.5.3)"),
-	TlsOpts = ct_helper:get_certs_from_ets(),
 	{ok, Socket} = ssl:connect("localhost", config(port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			binary, {active, false}|TlsOpts]),
+		[{alpn_advertised_protocols, [<<"h2">>]}, binary, {active, false}]),
 	{ok, <<"h2">>} = ssl:negotiated_protocol(Socket),
 	%% Send a valid preface.
 	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
@@ -726,10 +703,8 @@ alpn_client_preface_settings_ack_timeout(Config) ->
 
 alpn(Config) ->
 	doc("Successful ALPN negotiation. (RFC7540 3.3)"),
-	TlsOpts = ct_helper:get_certs_from_ets(),
 	{ok, Socket} = ssl:connect("localhost", config(port, Config),
-		[{alpn_advertised_protocols, [<<"h2">>]},
-			binary, {active, false}|TlsOpts]),
+		[{alpn_advertised_protocols, [<<"h2">>]}, binary, {active, false}]),
 	{ok, <<"h2">>} = ssl:negotiated_protocol(Socket),
 	%% Send a valid preface.
 	%% @todo Use non-empty SETTINGS here. Just because.
@@ -753,9 +728,7 @@ alpn(Config) ->
 
 prior_knowledge_reject_tls(Config) ->
 	doc("Implementations that support HTTP/2 over TLS must use ALPN. (RFC7540 3.4)"),
-	TlsOpts = ct_helper:get_certs_from_ets(),
-	{ok, Socket} = ssl:connect("localhost", config(port, Config),
-		[binary, {active, false}|TlsOpts]),
+	{ok, Socket} = ssl:connect("localhost", config(port, Config), [binary, {active, false}]),
 	%% Send a valid preface.
 	ok = ssl:send(Socket, ["PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
 	%% We expect the server to send an HTTP 400 error
@@ -1374,8 +1347,7 @@ max_frame_size_allow_exactly_custom(Config0) ->
 		{ok, << Len2:24, 1:8, _:40 >>} = gen_tcp:recv(Socket, 9, 6000),
 		{ok, _} = gen_tcp:recv(Socket, Len2, 6000),
 		%% No errors follow due to our sending of a 25000 bytes frame.
-		{error, timeout} = gen_tcp:recv(Socket, 0, 1000),
-		gen_tcp:close(Socket)
+		{error, timeout} = gen_tcp:recv(Socket, 0, 1000)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -1405,8 +1377,7 @@ max_frame_size_reject_larger_than_custom(Config0) ->
 			cow_http2:data(1, fin, <<0:30001/unit:8>>)
 		]),
 		%% Receive a FRAME_SIZE_ERROR connection error.
-		{ok, << _:24, 7:8, _:72, 6:32 >>} = gen_tcp:recv(Socket, 17, 6000),
-		gen_tcp:close(Socket)
+		{ok, << _:24, 7:8, _:72, 6:32 >>} = gen_tcp:recv(Socket, 17, 6000)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -1541,7 +1512,7 @@ rst_stream_reject_frame_size_too_small(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/long_polling">>}
+		{<<":path">>, <<"/">>}
 	]),
 	ok = gen_tcp:send(Socket, [
 		cow_http2:headers(1, fin, HeadersBlock),
@@ -1560,7 +1531,7 @@ rst_stream_reject_frame_size_too_large(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/long_polling">>}
+		{<<":path">>, <<"/">>}
 	]),
 	ok = gen_tcp:send(Socket, [
 		cow_http2:headers(1, fin, HeadersBlock),
@@ -1630,7 +1601,7 @@ push_promise_reject_frame_size_too_small_padded_flag(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/long_polling">>}
+		{<<":path">>, <<"/">>}
 	]),
 	Len = 14 + iolist_size(HeadersBlock),
 	ok = gen_tcp:send(Socket, [
@@ -1823,7 +1794,7 @@ idle_stream_reject_push_promise(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/long_polling">>}
+		{<<":path">>, <<"/">>}
 	]),
 	ok = gen_tcp:send(Socket, cow_http2:push_promise(1, 3, HeadersBlock)),
 	%% Receive a PROTOCOL_ERROR connection error.
@@ -2621,10 +2592,9 @@ settings_header_table_size_server(Config0) ->
 		{ok, << Len1:24, 1:8, _:40 >>} = gen_tcp:recv(Socket, 9, 6000),
 		{ok, RespHeadersBlock1} = gen_tcp:recv(Socket, Len1, 6000),
 		{RespHeaders, _} = cow_hpack:decode(RespHeadersBlock1, DecodeState),
-		{_, <<"200">>} = lists:keyfind(<<":status">>, 1, RespHeaders),
+		{_, <<"200">>} = lists:keyfind(<<":status">>, 1, RespHeaders)
 		%% The decoding succeeded on the server, confirming that
 		%% the table size was updated to HeaderTableSize.
-		gen_tcp:close(Socket)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -2653,8 +2623,7 @@ settings_max_concurrent_streams(Config0) ->
 			cow_http2:headers(3, fin, ReqHeadersBlock2)
 		]),
 		%% Receive a REFUSED_STREAM stream error.
-		{ok, << _:24, 3:8, _:8, 3:32, 7:32 >>} = gen_tcp:recv(Socket, 13, 6000),
-		gen_tcp:close(Socket)
+		{ok, << _:24, 3:8, _:8, 3:32, 7:32 >>} = gen_tcp:recv(Socket, 13, 6000)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -2678,8 +2647,7 @@ settings_max_concurrent_streams_0(Config0) ->
 		]),
 		ok = gen_tcp:send(Socket, cow_http2:headers(1, fin, HeadersBlock)),
 		%% Receive a REFUSED_STREAM stream error.
-		{ok, << _:24, 3:8, _:8, 1:32, 7:32 >>} = gen_tcp:recv(Socket, 13, 6000),
-		gen_tcp:close(Socket)
+		{ok, << _:24, 3:8, _:8, 1:32, 7:32 >>} = gen_tcp:recv(Socket, 13, 6000)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -2747,8 +2715,7 @@ settings_initial_window_size(Config0) ->
 		{ok, << Len2:24, 1:8, _:40 >>} = gen_tcp:recv(Socket, 9, 6000),
 		{ok, _} = gen_tcp:recv(Socket, Len2, 6000),
 		%% No errors follow due to our sending of more than 65535 bytes of data.
-		{error, timeout} = gen_tcp:recv(Socket, 0, 1000),
-		gen_tcp:close(Socket)
+		{error, timeout} = gen_tcp:recv(Socket, 0, 1000)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -2791,8 +2758,7 @@ settings_initial_window_size_after_ack(Config0) ->
 			cow_http2:data(1, fin, <<0:32/unit:8>>)
 		]),
 		%% Receive a FLOW_CONTROL_ERROR stream error.
-		{ok, << _:24, 3:8, _:8, 1:32, 3:32 >>} = gen_tcp:recv(Socket, 13, 6000),
-		gen_tcp:close(Socket)
+		{ok, << _:24, 3:8, _:8, 1:32, 3:32 >>} = gen_tcp:recv(Socket, 13, 6000)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -2840,8 +2806,7 @@ settings_initial_window_size_before_ack(Config0) ->
 		{ok, << Len2:24, 1:8, _:40 >>} = gen_tcp:recv(Socket, 9, 6000),
 		{ok, _} = gen_tcp:recv(Socket, Len2, 6000),
 		%% No errors follow due to our sending of more than 0 bytes of data.
-		{error, timeout} = gen_tcp:recv(Socket, 0, 1000),
-		gen_tcp:close(Socket)
+		{error, timeout} = gen_tcp:recv(Socket, 0, 1000)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -2874,8 +2839,7 @@ settings_max_frame_size(Config0) ->
 		{ok, << Len2:24, 1:8, _:40 >>} = gen_tcp:recv(Socket, 9, 6000),
 		{ok, _} = gen_tcp:recv(Socket, Len2, 6000),
 		%% No errors follow due to our sending of a 25000 bytes frame.
-		{error, timeout} = gen_tcp:recv(Socket, 0, 1000),
-		gen_tcp:close(Socket)
+		{error, timeout} = gen_tcp:recv(Socket, 0, 1000)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -2986,64 +2950,39 @@ client_settings_disable_push(Config) ->
 %% (RFC7540 6.8) GOAWAY
 % @todo GOAWAY frames have a reserved bit in the payload that must be ignored.
 %
+%% @todo We should eventually implement the mechanism for gracefully
+%% shutting down of the connection. (Send the GOAWAY, finish processing
+%% the current set of streams, give up after a certain timeout.)
+%
+%% @todo If we graceful shutdown and receive a GOAWAY, we give up too.
 %   A GOAWAY frame might not immediately precede closing of the
 %   connection; a receiver of a GOAWAY that has no more use for the
 %   connection SHOULD still send a GOAWAY frame before terminating the
 %   connection.
-
-graceful_shutdown_client_stays(Config) ->
-	doc("A server gracefully shutting down must send a GOAWAY frame with the "
-		"last stream identifier set to 2^31-1 and a NO_ERROR code. After allowing "
-		"time for any in-flight stream creation the server can send another GOAWAY "
-		"frame with an updated last stream identifier. (RFC7540 6.8)"),
-	{ok, Socket} = do_handshake(Config),
-	ServerConnPid = get_remote_pid_tcp(Socket),
-	ok = sys:terminate(ServerConnPid, whatever),
-	%% First GOAWAY frame.
-	{ok, <<_:24, 7:8, 0:8, 0:1, 0:31, 0:1, 16#7fffffff:31, 0:32>>} = gen_tcp:recv(Socket, 17, 500),
-	%% Second GOAWAY frame.
-	{ok, <<_:24, 7:8, 0:8, 0:1, 0:31, 0:1, 0:31, 0:32>>} = gen_tcp:recv(Socket, 17, 1500),
-	{error, closed} = gen_tcp:recv(Socket, 3, 1000),
-	ok.
-
-%% @todo We should add this test also for discarded DATA and CONTINUATION frames.
-%% The test can be the same for CONTINUATION (just send headers differently) but
-%% the DATA test should make sure the global window is not corrupted.
-%%
-%% @todo We should extend this test to have two requests: one initiated before
-%% the second GOAWAY, but not terminated; another initiated after the GOAWAY, terminated.
-%% Finally the first request is terminated by sending a body and a trailing
-%% HEADERS frame. This way we know for sure that the connection state is not corrupt.
-graceful_shutdown_race_condition(Config) ->
-	doc("A server in the process of gracefully shutting down must discard frames "
-		"for streams initiated by the receiver with identifiers higher than the "
-		"identified last stream. This may include frames that alter connection "
-		"state such as HEADERS frames. (RFC7540 6.8)"),
-	{ok, Socket} = do_handshake(Config),
-	ServerConnPid = get_remote_pid_tcp(Socket),
-	ok = sys:terminate(ServerConnPid, whatever),
-	%% First GOAWAY frame.
-	{ok, <<_:24, 7:8, 0:8, 0:1, 0:31, 0:1, 16#7fffffff:31, 0:32>>} = gen_tcp:recv(Socket, 17, 500),
-	%% Simulate an in-flight request, sent by the client before the
-	%% GOAWAY frame arrived to the client.
-	{HeadersBlock, _} = cow_hpack:encode([
-		{<<":method">>, <<"GET">>},
-		{<<":scheme">>, <<"http">>},
-		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/delay_hello">>}
-	]),
-	ok = gen_tcp:send(Socket, cow_http2:headers(1, fin, HeadersBlock)),
-	%% Second GOAWAY frame.
-	{ok, <<_:24, 7:8, 0:8, 0:1, 0:31, 0:1, 1:31, 0:32>>} = gen_tcp:recv(Socket, 17, 2000),
-	%% The client tries to send another request, ignoring the GOAWAY.
-	ok = gen_tcp:send(Socket, cow_http2:headers(3, fin, HeadersBlock)),
-	%% The server responds to the first request (streamid 1) and closes.
-	{ok, <<RespHeadersPayloadLength:24, 1, 4, 0:1, 1:31>>} = gen_tcp:recv(Socket, 9, 1000),
-	{ok, _RespHeaders} = gen_tcp:recv(Socket, RespHeadersPayloadLength, 1000),
-	{ok, <<12:24, 0, 1, 0:1, 1:31, "Hello world!">>} = gen_tcp:recv(Socket, 21, 1000),
-	{error, closed} = gen_tcp:recv(Socket, 3, 1000),
-	ok.
-
+%
+%% @todo And it gets more complex when you think about h1 to h2 proxies.
+%   A server that is attempting to gracefully shut down a
+%   connection SHOULD send an initial GOAWAY frame with the last stream
+%   identifier set to 2^31-1 and a NO_ERROR code.  This signals to the
+%   client that a shutdown is imminent and that initiating further
+%   requests is prohibited.  After allowing time for any in-flight stream
+%   creation (at least one round-trip time), the server can send another
+%   GOAWAY frame with an updated last stream identifier.  This ensures
+%   that a connection can be cleanly shut down without losing requests.
+%
+%% @todo And of course even if we shutdown we need to be careful about
+%% the connection state.
+%   After sending a GOAWAY frame, the sender can discard frames for
+%   streams initiated by the receiver with identifiers higher than the
+%   identified last stream.  However, any frames that alter connection
+%   state cannot be completely ignored.  For instance, HEADERS,
+%   PUSH_PROMISE, and CONTINUATION frames MUST be minimally processed to
+%   ensure the state maintained for header compression is consistent (see
+%   Section 4.3); similarly, DATA frames MUST be counted toward the
+%   connection flow-control window.  Failure to process these frames can
+%   cause flow control or header compression state to become
+%   unsynchronized.
+%
 %   The GOAWAY frame applies to the connection, not a specific stream.
 %   An endpoint MUST treat a GOAWAY frame with a stream identifier other
 %   than 0x0 as a connection error (Section 5.4.1) of type
@@ -3076,7 +3015,7 @@ window_update_reject_0_stream(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/long_polling">>}
+		{<<":path">>, <<"/">>}
 	]),
 	ok = gen_tcp:send(Socket, [
 		cow_http2:headers(1, fin, HeadersBlock),
@@ -3124,8 +3063,7 @@ data_reject_overflow(Config0) ->
 			cow_http2:data(1, fin, <<0:15000/unit:8>>)
 		]),
 		%% Receive a FLOW_CONTROL_ERROR connection error.
-		{ok, << _:24, 7:8, _:72, 3:32 >>} = gen_tcp:recv(Socket, 17, 6000),
-		gen_tcp:close(Socket)
+		{ok, << _:24, 7:8, _:72, 3:32 >>} = gen_tcp:recv(Socket, 17, 6000)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -3173,8 +3111,7 @@ data_reject_overflow_stream(Config0) ->
 			cow_http2:data(1, fin, <<0:15000/unit:8>>)
 		]),
 		%% Receive a FLOW_CONTROL_ERROR stream error.
-		{ok, << _:24, 3:8, _:8, 1:32, 3:32 >>} = gen_tcp:recv(Socket, 13, 6000),
-		gen_tcp:close(Socket)
+		{ok, << _:24, 3:8, _:8, 1:32, 3:32 >>} = gen_tcp:recv(Socket, 13, 6000)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -3208,7 +3145,7 @@ window_update_reject_overflow_stream(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/long_polling">>}
+		{<<":path">>, <<"/">>}
 	]),
 	ok = gen_tcp:send(Socket, [
 		cow_http2:headers(1, fin, HeadersBlock),
@@ -3701,54 +3638,6 @@ reject_te_header_other_values(Config) ->
 %   Transfer-Encoding, and Upgrade, even if they are not nominated by the
 %   Connection header field.
 
-response_dont_send_header_in_connection(Config) ->
-	doc("Intermediaries must remove HTTP/1.1 connection headers when "
-		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
-		"not send them either. All headers listed in the connection "
-		"header must be removed. (RFC7540 8.1.2.2)"),
-	do_response_dont_send_http11_header(Config, <<"custom-header">>).
-
-response_dont_send_connection_header(Config) ->
-	doc("Intermediaries must remove HTTP/1.1 connection headers when "
-		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
-		"not send them either. The connection header must be removed. (RFC7540 8.1.2.2)"),
-	do_response_dont_send_http11_header(Config, <<"connection">>).
-
-response_dont_send_keep_alive_header(Config) ->
-	doc("Intermediaries must remove HTTP/1.1 connection headers when "
-		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
-		"not send them either. The keep-alive header must be removed "
-		"even if not listed in the connection header. (RFC7540 8.1.2.2)"),
-	do_response_dont_send_http11_header(Config, <<"keep-alive">>).
-
-response_dont_send_proxy_connection_header(Config) ->
-	doc("Intermediaries must remove HTTP/1.1 connection headers when "
-		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
-		"not send them either. The proxy-connection header must be removed "
-		"even if not listed in the connection header. (RFC7540 8.1.2.2)"),
-	do_response_dont_send_http11_header(Config, <<"proxy-connection">>).
-
-response_dont_send_transfer_encoding_header(Config) ->
-	doc("Intermediaries must remove HTTP/1.1 connection headers when "
-		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
-		"not send them either. The transfer-encoding header must be removed "
-		"even if not listed in the connection header. (RFC7540 8.1.2.2)"),
-	do_response_dont_send_http11_header(Config, <<"transfer-encoding">>).
-
-response_dont_send_upgrade_header(Config) ->
-	doc("Intermediaries must remove HTTP/1.1 connection headers when "
-		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
-		"not send them either. The upgrade header must be removed "
-		"even if not listed in the connection header. (RFC7540 8.1.2.2)"),
-	do_response_dont_send_http11_header(Config, <<"upgrade">>).
-
-do_response_dont_send_http11_header(Config, Name) ->
-	ConnPid = gun_open(Config),
-	Ref = gun:get(ConnPid, "/resp/set_resp_headers_http11"),
-	{response, nofin, 200, Headers} = gun:await(ConnPid, Ref),
-	false = lists:keyfind(Name, 1, Headers),
-	ok.
-
 reject_userinfo(Config) ->
 	doc("An authority containing a userinfo component must be rejected "
 		"with a PROTOCOL_ERROR stream error. (RFC7540 8.1.2.3, RFC7540 8.1.2.6)"),
@@ -3857,7 +3746,7 @@ reject_many_pseudo_header_scheme(Config) ->
 	ok.
 
 reject_missing_pseudo_header_authority(Config) ->
-	doc("A request without an authority or host component must be rejected "
+	doc("A request without an authority component must be rejected "
 		"with a PROTOCOL_ERROR stream error. (RFC7540 8.1.2.3, RFC7540 8.1.2.6)"),
 	{ok, Socket} = do_handshake(Config),
 	%% Send a HEADERS frame without an :authority pseudo-header.
@@ -3870,29 +3759,6 @@ reject_missing_pseudo_header_authority(Config) ->
 	%% Receive a PROTOCOL_ERROR stream error.
 	{ok, << _:24, 3:8, _:8, 1:32, 1:32 >>} = gen_tcp:recv(Socket, 13, 6000),
 	ok.
-
-accept_host_header_on_missing_pseudo_header_authority(Config) ->
-	doc("A request without an authority but with a host header must be accepted. "
-		"(RFC7540 8.1.2.3, RFC7540 8.1.3)"),
-	{ok, Socket} = do_handshake(Config),
-	%% Send a HEADERS frame with host header and without an :authority pseudo-header.
-	{HeadersBlock, _} = cow_hpack:encode([
-		{<<":method">>, <<"GET">>},
-		{<<":scheme">>, <<"http">>},
-		{<<":path">>, <<"/">>},
-		{<<"host">>, <<"localhost">>}
-	]),
-	ok = gen_tcp:send(Socket, cow_http2:headers(1, fin, HeadersBlock)),
-	%% Receive a 200 response.
-	{ok, << Len:24, 1:8, _:8, _:32 >>} = gen_tcp:recv(Socket, 9, 6000),
-	{ok, RespHeadersBlock} = gen_tcp:recv(Socket, Len, 6000),
-	{RespHeaders, _} = cow_hpack:decode(RespHeadersBlock),
-	{_, <<"200">>} = lists:keyfind(<<":status">>, 1, RespHeaders),
-	ok.
-
-%% When both :authority and host headers are received, the current behavior
-%% is to favor :authority and ignore the host header. The specification does
-%% not describe the correct behavior to follow in that case.
 
 reject_many_pseudo_header_authority(Config) ->
 	doc("A request containing more than one authority component must be rejected "
@@ -4101,18 +3967,6 @@ reject_duplicate_content_length_header(Config) ->
 %   A client cannot push.  Thus, servers MUST treat the receipt of a
 %   PUSH_PROMISE frame as a connection error (Section 5.4.1) of type
 %   PROTOCOL_ERROR.
-
-push_has_no_request_body(Config) ->
-	doc("PUSH_PROMISE frames include the complete set of request headers "
-		"and the request can never include a body. (RFC7540 8.2.1)"),
-	ConnPid = gun_open(Config),
-	Ref = gun:get(ConnPid, "/resp/push/read_body"),
-	{push, PushRef, <<"GET">>, _, _} = gun:await(ConnPid, Ref),
-	{response, fin, 200, _} = gun:await(ConnPid, Ref),
-	%% We should not get a body in the pushed resource
-	%% since there was no body in the request.
-	{response, fin, 200, _} = gun:await(ConnPid, PushRef),
-	ok.
 
 %% (RFC7540 8.2.1)
 %   The header fields in PUSH_PROMISE and any subsequent CONTINUATION

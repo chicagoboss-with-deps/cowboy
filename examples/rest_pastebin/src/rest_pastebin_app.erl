@@ -22,4 +22,4 @@ start(_Type, _Args) ->
 	rest_pastebin_sup:start_link().
 
 stop(_State) ->
-	ok = cowboy:stop_listener(http).
+	ok.

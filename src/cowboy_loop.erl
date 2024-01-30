@@ -15,16 +15,17 @@
 -module(cowboy_loop).
 -behaviour(cowboy_sub_protocol).
 
+-ifdef(OTP_RELEASE).
+-compile({nowarn_deprecated_function, [{erlang, get_stacktrace, 0}]}).
+-endif.
+
 -export([upgrade/4]).
 -export([upgrade/5]).
--export([loop/5]).
+-export([loop/4]).
 
 -export([system_continue/3]).
 -export([system_terminate/4]).
 -export([system_code_change/4]).
-
-%% From gen_server.
--define(is_timeout(X), ((X) =:= infinity orelse (is_integer(X) andalso (X) >= 0))).
 
 -callback init(Req, any())
 	-> {ok | module(), Req, any()}
@@ -44,55 +45,49 @@
 	-> {ok, Req, Env} | {suspend, ?MODULE, loop, [any()]}
 	when Req::cowboy_req:req(), Env::cowboy_middleware:env().
 upgrade(Req, Env, Handler, HandlerState) ->
-	loop(Req, Env, Handler, HandlerState, infinity).
+	loop(Req, Env, Handler, HandlerState).
 
--spec upgrade(Req, Env, module(), any(), hibernate | timeout())
+-spec upgrade(Req, Env, module(), any(), hibernate)
 	-> {suspend, ?MODULE, loop, [any()]}
 	when Req::cowboy_req:req(), Env::cowboy_middleware:env().
 upgrade(Req, Env, Handler, HandlerState, hibernate) ->
-	suspend(Req, Env, Handler, HandlerState);
-upgrade(Req, Env, Handler, HandlerState, Timeout) when ?is_timeout(Timeout) ->
-	loop(Req, Env, Handler, HandlerState, Timeout).
+	suspend(Req, Env, Handler, HandlerState).
 
--spec loop(Req, Env, module(), any(), timeout())
+-spec loop(Req, Env, module(), any())
 	-> {ok, Req, Env} | {suspend, ?MODULE, loop, [any()]}
 	when Req::cowboy_req:req(), Env::cowboy_middleware:env().
 %% @todo Handle system messages.
-loop(Req=#{pid := Parent}, Env, Handler, HandlerState, Timeout) ->
+loop(Req=#{pid := Parent}, Env, Handler, HandlerState) ->
 	receive
 		%% System messages.
 		{'EXIT', Parent, Reason} ->
 			terminate(Req, Env, Handler, HandlerState, Reason);
 		{system, From, Request} ->
 			sys:handle_system_msg(Request, From, Parent, ?MODULE, [],
-				{Req, Env, Handler, HandlerState, Timeout});
+				{Req, Env, Handler, HandlerState});
 		%% Calls from supervisor module.
 		{'$gen_call', From, Call} ->
 			cowboy_children:handle_supervisor_call(Call, From, [], ?MODULE),
-			loop(Req, Env, Handler, HandlerState, Timeout);
+			loop(Req, Env, Handler, HandlerState);
 		Message ->
-			call(Req, Env, Handler, HandlerState, Timeout, Message)
-	after Timeout ->
-		call(Req, Env, Handler, HandlerState, Timeout, timeout)
+			call(Req, Env, Handler, HandlerState, Message)
 	end.
 
-call(Req0, Env, Handler, HandlerState0, Timeout, Message) ->
+call(Req0, Env, Handler, HandlerState0, Message) ->
 	try Handler:info(Message, Req0, HandlerState0) of
 		{ok, Req, HandlerState} ->
-			loop(Req, Env, Handler, HandlerState, Timeout);
+			loop(Req, Env, Handler, HandlerState);
 		{ok, Req, HandlerState, hibernate} ->
 			suspend(Req, Env, Handler, HandlerState);
-		{ok, Req, HandlerState, NewTimeout} when ?is_timeout(NewTimeout) ->
-			loop(Req, Env, Handler, HandlerState, NewTimeout);
 		{stop, Req, HandlerState} ->
 			terminate(Req, Env, Handler, HandlerState, stop)
-	catch Class:Reason:Stacktrace ->
+	catch Class:Reason ->
 		cowboy_handler:terminate({crash, Class, Reason}, Req0, HandlerState0, Handler),
-		erlang:raise(Class, Reason, Stacktrace)
+		erlang:raise(Class, Reason, erlang:get_stacktrace())
 	end.
 
 suspend(Req, Env, Handler, HandlerState) ->
-	{suspend, ?MODULE, loop, [Req, Env, Handler, HandlerState, infinity]}.
+	{suspend, ?MODULE, loop, [Req, Env, Handler, HandlerState]}.
 
 terminate(Req, Env, Handler, HandlerState, Reason) ->
 	Result = cowboy_handler:terminate(Reason, Req, HandlerState, Handler),
@@ -100,15 +95,15 @@ terminate(Req, Env, Handler, HandlerState, Reason) ->
 
 %% System callbacks.
 
--spec system_continue(_, _, {Req, Env, module(), any(), timeout()})
+-spec system_continue(_, _, {Req, Env, module(), any()})
 	-> {ok, Req, Env} | {suspend, ?MODULE, loop, [any()]}
 	when Req::cowboy_req:req(), Env::cowboy_middleware:env().
-system_continue(_, _, {Req, Env, Handler, HandlerState, Timeout}) ->
-	loop(Req, Env, Handler, HandlerState, Timeout).
+system_continue(_, _, {Req, Env, Handler, HandlerState}) ->
+	loop(Req, Env, Handler, HandlerState).
 
--spec system_terminate(any(), _, _, {Req, Env, module(), any(), timeout()})
+-spec system_terminate(any(), _, _, {Req, Env, module(), any()})
 	-> {ok, Req, Env} when Req::cowboy_req:req(), Env::cowboy_middleware:env().
-system_terminate(Reason, _, _, {Req, Env, Handler, HandlerState, _}) ->
+system_terminate(Reason, _, _, {Req, Env, Handler, HandlerState}) ->
 	terminate(Req, Env, Handler, HandlerState, Reason).
 
 -spec system_code_change(Misc, _, _, _) -> {ok, Misc}

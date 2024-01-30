@@ -27,13 +27,13 @@ init_http(Ref, ProtoOpts, Config) ->
 
 init_https(Ref, ProtoOpts, Config) ->
 	Opts = ct_helper:get_certs_from_ets(),
-	{ok, _} = cowboy:start_tls(Ref, Opts ++ [{port, 0}, {verify, verify_none}], ProtoOpts),
+	{ok, _} = cowboy:start_tls(Ref, Opts ++ [{port, 0}], ProtoOpts),
 	Port = ranch:get_port(Ref),
 	[{ref, Ref}, {type, ssl}, {protocol, http}, {port, Port}, {opts, Opts}|Config].
 
 init_http2(Ref, ProtoOpts, Config) ->
 	Opts = ct_helper:get_certs_from_ets(),
-	{ok, _} = cowboy:start_tls(Ref, Opts ++ [{port, 0}, {verify, verify_none}], ProtoOpts),
+	{ok, _} = cowboy:start_tls(Ref, Opts ++ [{port, 0}], ProtoOpts),
 	Port = ranch:get_port(Ref),
 	[{ref, Ref}, {type, ssl}, {protocol, http2}, {port, Port}, {opts, Opts}|Config].
 
@@ -52,19 +52,15 @@ common_all() ->
 	].
 
 common_groups(Tests) ->
-	Opts = case os:getenv("NO_PARALLEL") of
-		false -> [parallel];
-		_ -> []
-	end,
 	[
-		{http, Opts, Tests},
-		{https, Opts, Tests},
-		{h2, Opts, Tests},
-		{h2c, Opts, Tests},
-		{http_compress, Opts, Tests},
-		{https_compress, Opts, Tests},
-		{h2_compress, Opts, Tests},
-		{h2c_compress, Opts, Tests}
+		{http, [parallel], Tests},
+		{https, [parallel], Tests},
+		{h2, [parallel], Tests},
+		{h2c, [parallel], Tests},
+		{http_compress, [parallel], Tests},
+		{https_compress, [parallel], Tests},
+		{h2_compress, [parallel], Tests},
+		{h2c_compress, [parallel], Tests}
 	].
 
 init_common_groups(Name = http, Config, Mod) ->
@@ -112,20 +108,16 @@ gun_open(Config) ->
 	gun_open(Config, #{}).
 
 gun_open(Config, Opts) ->
-	TlsOpts = case proplists:get_value(no_cert, Config, false) of
-		true -> [{verify, verify_none}];
-		false -> ct_helper:get_certs_from_ets()
-	end,
 	{ok, ConnPid} = gun:open("localhost", config(port, Config), Opts#{
 		retry => 0,
 		transport => config(type, Config),
-		tls_opts => TlsOpts,
+		transport_opts => proplists:get_value(transport_opts, Config, []),
 		protocols => [config(protocol, Config)]
 	}),
 	ConnPid.
 
 gun_down(ConnPid) ->
-	receive {gun_down, ConnPid, _, _, _} -> ok
+	receive {gun_down, ConnPid, _, _, _, _} -> ok
 	after 500 -> error(timeout) end.
 
 %% Support functions for testing using a raw socket.
@@ -156,12 +148,6 @@ raw_recv_head(Socket, Transport, Buffer) ->
 		{_, _} ->
 			Buffer
 	end.
-
-raw_recv_rest({raw_client, _, _}, Length, Buffer) when Length =:= byte_size(Buffer) ->
-	Buffer;
-raw_recv_rest({raw_client, Socket, Transport}, Length, Buffer) when Length > byte_size(Buffer) ->
-	{ok, Data} = Transport:recv(Socket, Length - byte_size(Buffer), 10000),
-	<< Buffer/binary, Data/binary >>.
 
 raw_recv({raw_client, Socket, Transport}, Length, Timeout) ->
 	Transport:recv(Socket, Length, Timeout).

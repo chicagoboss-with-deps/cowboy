@@ -98,16 +98,10 @@ crash_in_init(Config) ->
 	Pid = receive {Self, P, init, _, _, _} -> P after 1000 -> error(timeout) end,
 	%% Confirm terminate/3 is NOT called. We have no state to give to it.
 	receive {Self, Pid, terminate, _, _, _} -> error(terminate) after 1000 -> ok end,
-	%% Confirm early_error/5 is called in HTTP/1.1's case.
-	%% HTTP/2 does not send a response back so there is no early_error call.
-	case config(protocol, Config) of
-		http -> receive {Self, Pid, early_error, _, _, _, _, _} -> ok after 1000 -> error(timeout) end;
-		http2 -> ok
-	end,
 	%% Receive a 500 error response.
 	case gun:await(ConnPid, Ref) of
 		{response, fin, 500, _} -> ok;
-		{error, {stream_error, {stream_error, internal_error, _}}} -> ok
+		{error, {stream_error, internal_error, _}} -> ok
 	end.
 
 crash_in_data(Config) ->
@@ -129,7 +123,7 @@ crash_in_data(Config) ->
 	%% Receive a 500 error response.
 	case gun:await(ConnPid, Ref) of
 		{response, fin, 500, _} -> ok;
-		{error, {stream_error, {stream_error, internal_error, _}}} -> ok
+		{error, {stream_error, internal_error, _}} -> ok
 	end.
 
 crash_in_info(Config) ->
@@ -150,7 +144,7 @@ crash_in_info(Config) ->
 	%% Receive a 500 error response.
 	case gun:await(ConnPid, Ref) of
 		{response, fin, 500, _} -> ok;
-		{error, {stream_error, {stream_error, internal_error, _}}} -> ok
+		{error, {stream_error, internal_error, _}} -> ok
 	end.
 
 crash_in_terminate(Config) ->
@@ -253,47 +247,6 @@ do_crash_in_early_error_fatal(Config) ->
 	{response, fin, 400, _} = gun:await(ConnPid, Ref),
 	%% Confirm the connection gets closed.
 	gun_down(ConnPid).
-
-early_error_stream_error_reason(Config) ->
-	doc("Confirm that the stream_error given to early_error/5 is consistent between protocols."),
-	Self = self(),
-	ConnPid = gun_open(Config),
-	%% We must use different solutions to hit early_error with a stream_error
-	%% reason in both protocols.
-	{Method, Headers, Status, Error} = case config(protocol, Config) of
-		http -> {<<"GET">>, [{<<"host">>, <<"host:port">>}], 400, protocol_error};
-		http2 -> {<<"TRACE">>, [], 501, no_error}
-	end,
-	Ref = gun:request(ConnPid, Method, "/long_polling", [
-		{<<"accept-encoding">>, <<"gzip">>},
-		{<<"x-test-case">>, <<"early_error_stream_error_reason">>},
-		{<<"x-test-pid">>, pid_to_list(Self)}
-	|Headers], <<>>),
-	%% Confirm init/3 is NOT called. The error occurs before we reach this step.
-	receive {Self, _, init, _, _, _} -> error(init) after 1000 -> ok end,
-	%% Confirm terminate/3 is NOT called. We have no state to give to it.
-	receive {Self, _, terminate, _, _, _} -> error(terminate) after 1000 -> ok end,
-	%% Confirm early_error/5 is called.
-	Reason = receive {Self, _, early_error, _, R, _, _, _} -> R after 1000 -> error(timeout) end,
-	%% Confirm that the Reason is a {stream_error, Reason, Human}.
-	{stream_error, Error, HumanReadable} = Reason,
-	true = is_atom(HumanReadable),
-	%% Receive a 400 or 501 error response.
-	{response, fin, Status, _} = gun:await(ConnPid, Ref),
-	ok.
-
-flow_after_body_fully_read(Config) ->
-	doc("A flow command may be returned even after the body was read fully."),
-	Self = self(),
-	ConnPid = gun_open(Config),
-	Ref = gun:post(ConnPid, "/long_polling", [
-		{<<"x-test-case">>, <<"flow_after_body_fully_read">>},
-		{<<"x-test-pid">>, pid_to_list(Self)}
-	], <<"Hello world!">>),
-	%% Receive a 200 response, sent after the second flow command,
-	%% confirming that the flow command was accepted.
-	{response, _, 200, _} = gun:await(ConnPid, Ref),
-	gun:close(ConnPid).
 
 set_options_ignore_unknown(Config) ->
 	doc("Confirm that unknown options are ignored when using the set_options commands."),
@@ -410,7 +363,7 @@ shutdown_timeout_on_socket_close(Config) ->
 	receive {Self, Pid, terminate, _, _, _} -> ok after 1000 -> error(timeout) end,
 	%% We should NOT receive a DOWN message immediately.
 	receive {'DOWN', MRef, process, Spawn, killed} -> error(killed) after 1500 -> ok end,
-	%% We should receive it now.
+	%% We should received it now.
 	receive {'DOWN', MRef, process, Spawn, killed} -> ok after 1000 -> error(timeout) end,
 	ok.
 

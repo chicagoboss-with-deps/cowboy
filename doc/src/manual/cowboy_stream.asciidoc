@@ -52,11 +52,11 @@ HTTP/1.1 will initialize a stream only when the request-line
 and all headers have been received. When errors occur before
 that point Cowboy will call the callback `early_error/5`
 with a partial request, the error reason and the response
-Cowboy intends to send. All other events go through the
+Cowboy intends to send. All other events go throuh the
 stream handler using the normal callbacks.
 
 HTTP/2 will initialize the stream when the `HEADERS` block has
-been fully received and decoded. Any protocol error occurring
+been fully received and decoded. Any protocol error occuring
 before that will not result in a response being sent and
 will therefore not go through the stream handler. In addition
 Cowboy may terminate streams without sending an HTTP response
@@ -83,13 +83,6 @@ the `early_error/5` callback must return a response command.
 
 // @todo The logger option and the {log, Level, Format, Args}
 // options need to be documented and tested.
-
-The order in which the commands are given matters. For example,
-when sending a response and at the same time creating a new child
-process, the first command should be the `spawn` and the second the
-`response`. The reason for that is that the sending of the response
-may result in a socket error which leads to the termination of
-the connection before the rest of the commands are executed.
 
 The following commands are defined:
 
@@ -119,10 +112,6 @@ Send a response to the client.
 
 No more data can be sent after this command.
 
-Note that in Cowboy it is the `cowboy_req` module that
-sets the date and server headers. When using the command
-directly those headers will not be added.
-
 [[headers_command]]
 === headers
 
@@ -136,10 +125,6 @@ Initiate a response to the client.
 This initiates a response to the client. The stream
 will end when a data command with the `fin` flag or
 a trailer command is returned.
-
-Note that in Cowboy it is the `cowboy_req` module that
-sets the date and server headers. When using the command
-directly those headers will not be added.
 
 [[data_command]]
 === data
@@ -243,8 +228,6 @@ will end successfully as far as the client is concerned.
 To indicate that an error occurred, either use `error_response`
 before stopping, or use `internal_error`.
 
-No other command can be executed after the `stop` command.
-
 === internal_error
 
 Stop the stream with an error.
@@ -262,40 +245,13 @@ because of an internal error. An `error_response` command
 may be sent before that to advertise to the client why the
 stream is dropped.
 
-=== log
-
-Log a message.
-
-[source,erlang]
-----
-{log, logger:level(), io:format(), list()}
-----
-
-This command can be used to log a message using the
-configured `logger` module.
-
-=== set_options
-
-Set protocol options.
-
-[source,erlang]
-----
-{set_options, map()}
-----
-
-This can also be used to override stream handler
-options. For example this is supported by
-link:man:cowboy_compress_h(3)[cowboy_compress_h(3)].
-
-Not all options can be overridden. Please consult the
-relevant option's documentation for details.
-
 == Predefined events
 
 Cowboy will forward all messages sent to the stream to
 the `info/3` callback. To send a message to a stream,
-the function link:man:cowboy_req:cast(3)[cowboy_req:cast(3)]
-can be used.
+send a message to the connection process with the form
+`{{Pid, StreamID}, Msg}`. The connection process will
+then forward `Msg` to the stream handlers.
 
 Cowboy will also forward the exit signals for the
 processes that the stream spawned.
@@ -344,7 +300,7 @@ fin() :: fin | nofin
 ----
 
 Used in commands and events to indicate that this is
-the end of a direction of a stream.
+the end of the stream.
 
 === partial_req()
 
@@ -409,15 +365,13 @@ tuple.
 
 == Changelog
 
-* *2.7*: The `log` and `set_options` commands were introduced.
-* *2.6*: The `data` command can now contain a sendfile tuple.
+* *2.6*: The data command can now contain a sendfile tuple.
 * *2.6*: The `{stop, {exit, any()}, HumanReadable}` terminate reason was added.
-* *2.2*: The `trailers` command was introduced.
+* *2.2*: The trailers command was introduced.
 * *2.0*: Module introduced.
 
 == See also
 
 link:man:cowboy(7)[cowboy(7)],
 link:man:cowboy_http(3)[cowboy_http(3)],
-link:man:cowboy_http2(3)[cowboy_http2(3)],
-link:man:cowboy_req:cast(3)[cowboy_req:cast(3)]
+link:man:cowboy_http2(3)[cowboy_http2(3)]

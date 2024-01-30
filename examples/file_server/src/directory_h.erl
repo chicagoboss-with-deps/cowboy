@@ -8,7 +8,6 @@
 -export([allowed_methods/2]).
 -export([resource_exists/2]).
 -export([content_types_provided/2]).
--export([charsets_provided/2]).
 
 %% Callback Callbacks
 -export([list_json/2]).
@@ -32,26 +31,17 @@ content_types_provided(Req, State) ->
 		{{<<"application">>, <<"json">>, []}, list_json}
 	], Req, State}.
 
-charsets_provided(Req, State) ->
-	{[<<"utf-8">>], Req, State}.
-
 list_json(Req, {Path, Fs}) ->
-	Files = [unicode:characters_to_binary(F) || F <- Fs],
+	Files = [ <<(list_to_binary(F))/binary>> || F <- Fs ],
 	{jsx:encode(Files), Req, Path}.
 
 list_html(Req, {Path, Fs}) ->
-	Body = [[links(Path, unicode:characters_to_binary(F)) || F <- [".."|Fs]]],
+	Body = [[ links(Path, F) || F <- [".."|Fs] ]],
 	HTML = [<<"<!DOCTYPE html><html><head><title>Index</title></head>",
 		"<body>">>, Body, <<"</body></html>\n">>],
 	{HTML, Req, Path}.
 
-links(<<>>, "..") ->
-	"<a href='/..'>..</a><br>\n";
-links(Prefix, "..") ->
-	Tokens = string:tokens(binary_to_list(Prefix), "/"),
-	Back = lists:join("/", lists:reverse(tl(lists:reverse(Tokens)))),
-	["<a href='/../", Back, "'>..</a><br>\n"];
 links(<<>>, File) ->
 	["<a href='/", File, "'>", File, "</a><br>\n"];
 links(Prefix, File) ->
-	["<a href='/", Prefix, File, "'>", File, "</a><br>\n"].
+	["<a href='/", Prefix, $/, File, "'>", File, "</a><br>\n"].

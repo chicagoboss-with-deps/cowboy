@@ -62,21 +62,11 @@ do_get(Path, ReqHeaders, Config) ->
 
 %% Tests.
 
-gzip_accept_encoding_malformed(Config) ->
-	doc("Send malformed accept-encoding; get an uncompressed response."),
-	{200, Headers, _} = do_get("/reply/large",
-		[{<<"accept-encoding">>, <<";">>}], Config),
-	false = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
-	{_, <<"100000">>} = lists:keyfind(<<"content-length">>, 1, Headers),
-	ok.
-
 gzip_accept_encoding_missing(Config) ->
 	doc("Don't send accept-encoding; get an uncompressed response."),
 	{200, Headers, _} = do_get("/reply/large",
 		[], Config),
 	false = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	{_, <<"100000">>} = lists:keyfind(<<"content-length">>, 1, Headers),
 	ok.
 
@@ -85,16 +75,6 @@ gzip_accept_encoding_no_gzip(Config) ->
 	{200, Headers, _} = do_get("/reply/large",
 		[{<<"accept-encoding">>, <<"compress">>}], Config),
 	false = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
-	{_, <<"100000">>} = lists:keyfind(<<"content-length">>, 1, Headers),
-	ok.
-
-gzip_accept_encoding_not_supported(Config) ->
-	doc("Send unsupported accept-encoding; get an uncompressed response."),
-	{200, Headers, _} = do_get("/reply/large",
-		[{<<"accept-encoding">>, <<"application/gzip">>}], Config),
-	false = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	{_, <<"100000">>} = lists:keyfind(<<"content-length">>, 1, Headers),
 	ok.
 
@@ -104,19 +84,6 @@ gzip_reply_content_encoding(Config) ->
 		[{<<"accept-encoding">>, <<"gzip">>}], Config),
 	%% We set the content-encoding to compress; without actually compressing.
 	{_, <<"compress">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	%% The reply didn't include a vary header.
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
-	{_, <<"100000">>} = lists:keyfind(<<"content-length">>, 1, Headers),
-	ok.
-
-gzip_reply_etag(Config) ->
-	doc("Reply with etag header; get an uncompressed response."),
-	{200, Headers, _} = do_get("/reply/etag",
-		[{<<"accept-encoding">>, <<"gzip">>}], Config),
-	%% We set a strong etag.
-	{_, <<"\"STRONK\"">>} = lists:keyfind(<<"etag">>, 1, Headers),
-	%% The reply didn't include a vary header.
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	{_, <<"100000">>} = lists:keyfind(<<"content-length">>, 1, Headers),
 	ok.
 
@@ -125,7 +92,6 @@ gzip_reply_large_body(Config) ->
 	{200, Headers, GzBody} = do_get("/reply/large",
 		[{<<"accept-encoding">>, <<"gzip">>}], Config),
 	{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	{_, Length} = lists:keyfind(<<"content-length">>, 1, Headers),
 	ct:log("Original length: 100000; compressed: ~s.", [Length]),
 	_ = zlib:gunzip(GzBody),
@@ -136,7 +102,6 @@ gzip_reply_sendfile(Config) ->
 	{200, Headers, Body} = do_get("/reply/sendfile",
 		[{<<"accept-encoding">>, <<"gzip">>}], Config),
 	false = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	ct:log("Body received:~n~p~n", [Body]),
 	ok.
 
@@ -145,7 +110,6 @@ gzip_reply_small_body(Config) ->
 	{200, Headers, _} = do_get("/reply/small",
 		[{<<"accept-encoding">>, <<"gzip">>}], Config),
 	false = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	{_, <<"100">>} = lists:keyfind(<<"content-length">>, 1, Headers),
 	ok.
 
@@ -154,7 +118,6 @@ gzip_stream_reply(Config) ->
 	{200, Headers, GzBody} = do_get("/stream_reply/large",
 		[{<<"accept-encoding">>, <<"gzip">>}], Config),
 	{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	_ = zlib:gunzip(GzBody),
 	ok.
 
@@ -163,7 +126,6 @@ gzip_stream_reply_sendfile(Config) ->
 	{200, Headers, GzBody} = do_get("/stream_reply/sendfile",
 		[{<<"accept-encoding">>, <<"gzip">>}], Config),
 	{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	_ = zlib:gunzip(GzBody),
 	ok.
 
@@ -172,7 +134,6 @@ gzip_stream_reply_sendfile_fin(Config) ->
 	{200, Headers, GzBody} = do_get("/stream_reply/sendfile_fin",
 		[{<<"accept-encoding">>, <<"gzip">>}], Config),
 	{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	_ = zlib:gunzip(GzBody),
 	ok.
 
@@ -181,16 +142,6 @@ gzip_stream_reply_content_encoding(Config) ->
 	{200, Headers, Body} = do_get("/stream_reply/content-encoding",
 		[{<<"accept-encoding">>, <<"gzip">>}], Config),
 	{_, <<"compress">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
-	100000 = iolist_size(Body),
-	ok.
-
-gzip_stream_reply_etag(Config) ->
-	doc("Stream reply with etag header; get an uncompressed response."),
-	{200, Headers, Body} = do_get("/stream_reply/etag",
-		[{<<"accept-encoding">>, <<"gzip">>}], Config),
-	{_, <<"\"STRONK\"">>} = lists:keyfind(<<"etag">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	100000 = iolist_size(Body),
 	ok.
 
@@ -213,7 +164,6 @@ opts_compress_buffering_false(Config0) ->
 			[{<<"accept-encoding">>, <<"gzip">>}]),
 		{response, nofin, 200, Headers} = gun:await(ConnPid, Ref),
 		{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-		{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 		Z = zlib:open(),
 		zlib:inflateInit(Z, 31),
 		{data, nofin, Data1} = gun:await(ConnPid, Ref, 500),
@@ -245,7 +195,6 @@ opts_compress_buffering_true(Config0) ->
 			[{<<"accept-encoding">>, <<"gzip">>}]),
 		{response, nofin, 200, Headers} = gun:await(ConnPid, Ref),
 		{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-		{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 		Z = zlib:open(),
 		zlib:inflateInit(Z, 31),
 		%% The data gets buffered because it is too small.
@@ -280,7 +229,6 @@ set_options_compress_buffering_false(Config0) ->
 			[{<<"accept-encoding">>, <<"gzip">>}]),
 		{response, nofin, 200, Headers} = gun:await(ConnPid, Ref),
 		{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-		{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 		Z = zlib:open(),
 		zlib:inflateInit(Z, 31),
 		{data, nofin, Data1} = gun:await(ConnPid, Ref, 500),
@@ -312,7 +260,6 @@ set_options_compress_buffering_true(Config0) ->
 			[{<<"accept-encoding">>, <<"gzip">>}]),
 		{response, nofin, 200, Headers} = gun:await(ConnPid, Ref),
 		{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-		{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 		Z = zlib:open(),
 		zlib:inflateInit(Z, 31),
 		%% The data gets buffered because it is too small.
@@ -334,46 +281,5 @@ set_options_compress_threshold_0(Config) ->
 	{200, Headers, GzBody} = do_get("/reply/set_options_threshold0",
 		[{<<"accept-encoding">>, <<"gzip">>}], Config),
 	{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	_ = zlib:gunzip(GzBody),
-	ok.
-
-vary_accept(Config) ->
-	doc("Add accept-encoding to vary when the response has a 'vary: accept' header."),
-	{200, Headers, _} = do_get("/reply/vary", [
-		{<<"accept-encoding">>, <<"gzip">>},
-		{<<"x-test-vary">>, <<"accept">>}
-	], Config),
-	{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept, accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
-	ok.
-
-vary_accept_accept_encoding(Config) ->
-	doc("Don't change the vary value when the response has a 'vary: accept, accept-encoding' header."),
-	{200, Headers, _} = do_get("/reply/vary", [
-		{<<"accept-encoding">>, <<"gzip">>},
-		{<<"x-test-vary">>, <<"accept, accept-encoding">>}
-	], Config),
-	{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept, accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
-	ok.
-
-vary_empty(Config) ->
-	doc("Add accept-encoding to vary when the response has an empty vary header."),
-	{200, Headers, _} = do_get("/reply/vary", [
-		{<<"accept-encoding">>, <<"gzip">>},
-		{<<"x-test-vary">>, <<>>}
-	], Config),
-	{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"accept-encoding">>} = lists:keyfind(<<"vary">>, 1, Headers),
-	ok.
-
-vary_wildcard(Config) ->
-	doc("Don't change the vary value when the response has a 'vary: *' header."),
-	{200, Headers, _} = do_get("/reply/vary", [
-		{<<"accept-encoding">>, <<"gzip">>},
-		{<<"x-test-vary">>, <<"*">>}
-	], Config),
-	{_, <<"gzip">>} = lists:keyfind(<<"content-encoding">>, 1, Headers),
-	{_, <<"*">>} = lists:keyfind(<<"vary">>, 1, Headers),
 	ok.

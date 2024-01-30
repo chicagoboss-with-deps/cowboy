@@ -67,9 +67,7 @@ init_dispatch() ->
 			{"/ws_timeout_hibernate", ws_timeout_hibernate, []},
 			{"/ws_timeout_cancel", ws_timeout_cancel, []},
 			{"/ws_max_frame_size", ws_max_frame_size, []},
-			{"/ws_deflate_opts", ws_deflate_opts_h, []},
-			{"/ws_dont_validate_utf8", ws_dont_validate_utf8_h, []},
-			{"/ws_ping", ws_ping_h, []}
+			{"/ws_deflate_opts", ws_deflate_opts_h, []}
 		]}
 	]).
 
@@ -78,20 +76,6 @@ init_dispatch() ->
 unlimited_connections(Config) ->
 	doc("Websocket connections are not limited. The connections "
 		"are removed from the count after the handshake completes."),
-	case os:type() of
-		{win32, _} ->
-			{skip, "Tests that use too many sockets are disabled on Windows "
-				"to prevent intermittent failures."};
-		{unix, _} ->
-			case list_to_integer(os:cmd("printf `ulimit -n`")) of
-				Limit when Limit > 6100 ->
-					do_unlimited_connections(Config);
-				_ ->
-					{skip, "`ulimit -n` reports a limit too low for this test."}
-			end
-	end.
-
-do_unlimited_connections(Config) ->
 	_ = [begin
 		spawn_link(fun() -> do_connect_and_loop(Config) end),
 		timer:sleep(1)
@@ -320,29 +304,6 @@ do_ws_deflate_opts_z(Path, Config) ->
 	{error, closed} = gen_tcp:recv(Socket, 0, 6000),
 	ok.
 
-ws_dont_validate_utf8(Config) ->
-	doc("Handler is configured with UTF-8 validation disabled."),
-	{ok, Socket, _} = do_handshake("/ws_dont_validate_utf8", Config),
-	%% Send an invalid UTF-8 text frame and receive it back.
-	Mask = 16#37fa213d,
-	MaskedInvalid = do_mask(<<255, 255, 255, 255>>, Mask, <<>>),
-	ok = gen_tcp:send(Socket, <<1:1, 0:3, 1:4, 1:1, 4:7, Mask:32, MaskedInvalid/binary>>),
-	{ok, <<1:1, 0:3, 1:4, 0:1, 4:7, 255, 255, 255, 255>>} = gen_tcp:recv(Socket, 0, 6000),
-	ok.
-
-ws_first_frame_with_handshake(Config) ->
-	doc("Client sends the first frame immediately with the handshake. "
-		"This is invalid according to the protocol but we still want "
-		"to accept it if the handshake is successful."),
-	Mask = 16#37fa213d,
-	MaskedHello = do_mask(<<"Hello">>, Mask, <<>>),
-	{ok, Socket, _} = do_handshake("/ws_echo", "",
-		<<1:1, 0:3, 1:4, 1:1, 5:7, Mask:32, MaskedHello/binary>>,
-		Config),
-	{ok, <<1:1, 0:3, 1:4, 0:1, 5:7, "Hello">>} = gen_tcp:recv(Socket, 0, 6000),
-	ok.
-
-%% @todo Move these tests to ws_handler_SUITE.
 ws_init_return_ok(Config) ->
 	doc("Handler does nothing."),
 	{ok, Socket, _} = do_handshake("/ws_init?ok", Config),
@@ -419,6 +380,13 @@ ws_init_return_reply_many_close_hibernate(Config) ->
 		1:1, 0:3, 8:4, 0:8 >>} = gen_tcp:recv(Socket, 9, 6000),
 	ok.
 
+ws_init_return_stop(Config) ->
+	doc("Handler closes immediately after the handshake."),
+	{ok, Socket, _} = do_handshake("/ws_init?stop", Config),
+	{ok, << 1:1, 0:3, 8:4, 0:1, 2:7, 1000:16 >>} = gen_tcp:recv(Socket, 0, 6000),
+	{error, closed} = gen_tcp:recv(Socket, 0, 6000),
+	ok.
+
 ws_init_shutdown_before_handshake(Config) ->
 	doc("Handler stops before Websocket handshake."),
 	{ok, Socket} = gen_tcp:connect("localhost", config(port, Config), [binary, {active, false}]),
@@ -471,17 +439,6 @@ ws_max_frame_size_intermediate_fragment_close(Config) ->
 	ok = gen_tcp:send(Socket, << 1:1, 0:3, 0:4, 1:1, 5:7, Mask:32, MaskedHello/binary >>),
 	{ok, << 1:1, 0:3, 8:4, 0:1, 2:7, 1009:16 >>} = gen_tcp:recv(Socket, 0, 6000),
 	{error, closed} = gen_tcp:recv(Socket, 0, 6000),
-	ok.
-
-ws_ping(Config) ->
-	doc("Server initiated pings can receive a pong in response."),
-	{ok, Socket, _} = do_handshake("/ws_ping", Config),
-	%% Receive a server-sent ping.
-	{ok, << 1:1, 0:3, 9:4, 0:1, 0:7 >>} = gen_tcp:recv(Socket, 0, 6000),
-	%% Send a pong back with a 0 mask.
-	ok = gen_tcp:send(Socket, << 1:1, 0:3, 10:4, 1:1, 0:7, 0:32 >>),
-	%% Receive a text frame as a result.
-	{ok, << 1:1, 0:3, 1:4, 0:1, 4:7, "OK!!" >>} = gen_tcp:recv(Socket, 0, 6000),
 	ok.
 
 ws_send_close(Config) ->
@@ -679,12 +636,9 @@ ws_webkit_deflate_single_bytes(Config) ->
 %% Internal.
 
 do_handshake(Path, Config) ->
-	do_handshake(Path, "", "", Config).
+	do_handshake(Path, "", Config).
 
 do_handshake(Path, ExtraHeaders, Config) ->
-	do_handshake(Path, ExtraHeaders, "", Config).
-
-do_handshake(Path, ExtraHeaders, ExtraData, Config) ->
 	{ok, Socket} = gen_tcp:connect("localhost", config(port, Config),
 		[binary, {active, false}]),
 	ok = gen_tcp:send(Socket, [
@@ -696,16 +650,10 @@ do_handshake(Path, ExtraHeaders, ExtraData, Config) ->
 		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
 		"Upgrade: websocket\r\n",
 		ExtraHeaders,
-		"\r\n",
-		ExtraData]),
+		"\r\n"]),
 	{ok, Handshake} = gen_tcp:recv(Socket, 0, 6000),
 	{ok, {http_response, {1, 1}, 101, _}, Rest} = erlang:decode_packet(http, Handshake, []),
-	[Headers, Data] = do_decode_headers(erlang:decode_packet(httph, Rest, []), []),
-	%% Queue extra data back, if any. We don't want to receive it yet.
-	case Data of
-		<<>> -> ok;
-		_ -> gen_tcp:unrecv(Socket, Data)
-	end,
+	[Headers, <<>>] = do_decode_headers(erlang:decode_packet(httph, Rest, []), []),
 	{_, "Upgrade"} = lists:keyfind('Connection', 1, Headers),
 	{_, "websocket"} = lists:keyfind('Upgrade', 1, Headers),
 	{_, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="} = lists:keyfind("sec-websocket-accept", 1, Headers),

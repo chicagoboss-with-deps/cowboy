@@ -52,9 +52,7 @@ to the listener, including HTTP/1.1 and HTTP/2.
 The HTTP/1.1 options are documented in the
 link:man:cowboy_http(3)[cowboy_http(3)] manual;
 and the HTTP/2 options in
-link:man:cowboy_http2(3)[cowboy_http2(3)]. Stream handlers
-such as link:man:cowboy_stream_h(3)[cowboy_stream_h(3)]
-(which is enabled by default) may also define options.
+link:man:cowboy_http2(3)[cowboy_http2(3)].
 
 == Return value
 
@@ -85,7 +83,7 @@ Dispatch = cowboy_router:compile([
 
 {ok, _} = cowboy:start_tls(example, [
     {port, 8443},
-    {certfile, "path/to/cert.pem"}
+    {cert, "path/to/cert.pem"}
 ], #{
     env => #{dispatch => Dispatch}
 }).
@@ -97,7 +95,7 @@ Dispatch = cowboy_router:compile([
 Name = example,
 
 {ok, _} = cowboy:start_tls(Name, [
-    {certfile, "path/to/cert.pem"}
+    {cert, "path/to/cert.pem"}
 ], #{
     env => #{dispatch => Dispatch}
 }),

@@ -9,7 +9,7 @@ cowboy_compress_h - Compress stream handler
 The module `cowboy_compress_h` compresses response bodies
 automatically when the client supports it. It will not
 try to compress responses that already have a content
-encoding or that have an etag header defined.
+encoding.
 
 Normal responses will only be compressed when their
 size is lower than the configured threshold. Streamed
@@ -28,7 +28,7 @@ opts() :: #{
 }
 ----
 
-Configuration for the compress stream handler.
+Configuration for the default stream handler.
 
 The default value is given next to the option name:
 
@@ -37,17 +37,11 @@ compress_buffering (false)::
 Whether the output will be buffered. By default no
 buffering is done to provide maximum compatibility
 at the cost of a lower compression rate.
-+
-This option can be updated at any time using the
-`set_options` stream handler command.
 
 compress_threshold (300)::
 
 How large the response body must be to be compressed
 when the response isn't streamed.
-+
-This option can be updated at any time using the
-`set_options` stream handler command.
 
 == Events
 
@@ -55,10 +49,6 @@ The compress stream handler does not produce any event.
 
 == Changelog
 
-* *2.11*: Compression is now disabled when the etag
-  header is in the response headers.
-* *2.11*: The vary: accept-encoding header is now
-  always set when this handler is enabled.
 * *2.6*: The options `compress_buffering` and
   `compress_threshold` were added.
 * *2.0*: Module introduced.
@@ -67,7 +57,4 @@ The compress stream handler does not produce any event.
 
 link:man:cowboy(7)[cowboy(7)],
 link:man:cowboy_stream(3)[cowboy_stream(3)],
-link:man:cowboy_decompress_h(3)[cowboy_decompress_h(3)],
-link:man:cowboy_metrics_h(3)[cowboy_metrics_h(3)],
-link:man:cowboy_stream_h(3)[cowboy_stream_h(3)],
-link:man:cowboy_tracer_h(3)[cowboy_tracer_h(3)]
+link:man:cowboy_stream_h(3)[cowboy_stream_h(3)]

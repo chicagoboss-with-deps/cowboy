@@ -80,7 +80,7 @@ do_compile_and_start(Example, Config) ->
 	%% TERM=dumb disables relx coloring.
 	ct:log("~s~n", [os:cmd(Make ++ " -C " ++ Dir ++ " TERM=dumb")]),
 	ct:log("~s~n", [os:cmd(Rel ++ " stop")]),
-	ct:log("~s~n", [os:cmd(Rel ++ " daemon")]),
+	ct:log("~s~n", [os:cmd(Rel ++ " start")]),
 	timer:sleep(2000),
 	ok.
 
@@ -372,16 +372,13 @@ file_server(Config) ->
 do_file_server(Transport, Protocol, Config) ->
 	%% Directory.
 	{200, DirHeaders, <<"<!DOCTYPE html><html>", _/bits >>} = do_get(Transport, Protocol, "/", Config),
-	{_, <<"text/html; charset=utf-8">>} = lists:keyfind(<<"content-type">>, 1, DirHeaders),
+	{_, <<"text/html">>} = lists:keyfind(<<"content-type">>, 1, DirHeaders),
 	_ = do_rest_get(Transport, Protocol, "/", <<"application/json">>, undefined, Config),
 	%% Files.
 	{200, _, _} = do_get(Transport, Protocol, "/small.mp4", Config),
 	{200, _, _} = do_get(Transport, Protocol, "/small.ogv", Config),
 	{200, _, _} = do_get(Transport, Protocol, "/test.txt", Config),
 	{200, _, _} = do_get(Transport, Protocol, "/video.html", Config),
-	{200, _, _} = do_get(Transport, Protocol,
-		["/", cow_uri:urlencode(<<"中文"/utf8>>), "/", cow_uri:urlencode(<<"中文.html"/utf8>>)],
-		Config),
 	ok.
 
 %% Markdown middleware.
@@ -461,14 +458,14 @@ websocket(Config) ->
 			exit(timeout)
 		end,
 		%% Check that we receive the echoed message.
-		gun:ws_send(Pid, StreamRef, {text, <<"hello">>}),
+		gun:ws_send(Pid, {text, <<"hello">>}),
 		receive
 			{gun_ws, Pid, StreamRef, {text, <<"That's what she said! hello">>}} ->
 				ok
 		after 500 ->
 			exit(timeout)
 		end,
-		gun:ws_send(Pid, StreamRef, close)
+		gun:ws_send(Pid, close)
 	after
 		do_stop(websocket)
 	end.

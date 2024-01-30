@@ -10,15 +10,15 @@ init(Req, Opts) ->
 
 websocket_init(State) ->
 	erlang:start_timer(1000, self(), <<"Hello!">>),
-	{[], State}.
+	{ok, State}.
 
 websocket_handle({text, Msg}, State) ->
-	{[{text, << "That's what she said! ", Msg/binary >>}], State};
+	{reply, {text, << "That's what she said! ", Msg/binary >>}, State};
 websocket_handle(_Data, State) ->
-	{[], State}.
+	{ok, State}.
 
 websocket_info({timeout, _Ref, Msg}, State) ->
 	erlang:start_timer(1000, self(), <<"How' you doin'?">>),
-	{[{text, Msg}], State};
+	{reply, {text, Msg}, State};
 websocket_info(_Info, State) ->
-	{[], State}.
+	{ok, State}.

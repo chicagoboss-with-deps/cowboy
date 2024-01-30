@@ -28,11 +28,11 @@ Loop handlers implement the following interface:
 ----
 init(Req, State)
     -> {cowboy_loop, Req, State}
-     | {cowboy_loop, Req, State, hibernate | timeout()}
+     | {cowboy_loop, Req, State, hibernate}
 
 info(Info, Req, State)
     -> {ok, Req, State}
-     | {ok, Req, State, hibernate | timeout()}
+     | {ok, Req, State, hibernate}
      | {stop, Req, State}
 
 terminate(Reason, Req, State) -> ok  %% optional
@@ -65,13 +65,13 @@ stop::
 
 {crash, Class, Reason}::
     A crash occurred in the handler. `Class` and `Reason` can be
-    used to obtain more information about the crash.
+    used to obtain more information about the crash. The function
+    `erlang:get_stacktrace/0` can also be called to obtain the
+    stacktrace of the process when the crash occurred.
 
 == Changelog
 
-* *2.11*: A timeout may be returned instead of `hibernate`.
-          It functions the same way as the `gen_server` timeout.
-* *2.0*: Loop handlers no longer need to handle socket events.
+* *2.0*: Loop handlers no longer need to handle overflow/timeouts.
 * *1.0*: Behavior introduced.
 
 == See also

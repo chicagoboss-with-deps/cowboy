@@ -71,10 +71,9 @@ early_error(StreamID, Reason, PartialReq, Resp, Opts) ->
 %% Internal.
 
 %% Check if the client supports decoding of gzip responses.
-%%
-%% A malformed accept-encoding header is ignored (no compression).
 check_req(Req) ->
-	try cowboy_req:parse_header(<<"accept-encoding">>, Req) of
+	%% @todo Probably shouldn't unconditionally crash on failure.
+	case cowboy_req:parse_header(<<"accept-encoding">>, Req) of
 		%% Client doesn't support any compression algorithm.
 		undefined ->
 			#state{compress=undefined};
@@ -88,22 +87,16 @@ check_req(Req) ->
 				_ ->
 					#state{compress=gzip}
 			end
-	catch
-		_:_ ->
-			#state{compress=undefined}
 	end.
 
 %% Do not compress responses that contain the content-encoding header.
 check_resp_headers(#{<<"content-encoding">> := _}, State) ->
 	State#state{compress=undefined};
-%% Do not compress responses that contain the etag header.
-check_resp_headers(#{<<"etag">> := _}, State) ->
-	State#state{compress=undefined};
 check_resp_headers(_, State) ->
 	State.
 
 fold(Commands, State=#state{compress=undefined}) ->
-	fold_vary_only(Commands, State, []);
+	{Commands, State};
 fold(Commands, State) ->
 	fold(Commands, State, []).
 
@@ -111,32 +104,32 @@ fold([], State, Acc) ->
 	{lists:reverse(Acc), State};
 %% We do not compress full sendfile bodies.
 fold([Response={response, _, _, {sendfile, _, _, _}}|Tail], State, Acc) ->
-	fold(Tail, State, [vary_response(Response)|Acc]);
+	fold(Tail, State, [Response|Acc]);
 %% We compress full responses directly, unless they are lower than
 %% the configured threshold or we find we are not able to by looking at the headers.
 fold([Response0={response, _, Headers, Body}|Tail],
 		State0=#state{threshold=CompressThreshold}, Acc) ->
 	case check_resp_headers(Headers, State0) of
 		State=#state{compress=undefined} ->
-			fold(Tail, State, [vary_response(Response0)|Acc]);
+			fold(Tail, State, [Response0|Acc]);
 		State1 ->
 			BodyLength = iolist_size(Body),
 			if
 				BodyLength =< CompressThreshold ->
-					fold(Tail, State1, [vary_response(Response0)|Acc]);
+					fold(Tail, State1, [Response0|Acc]);
 				true ->
 					{Response, State} = gzip_response(Response0, State1),
-					fold(Tail, State, [vary_response(Response)|Acc])
+					fold(Tail, State, [Response|Acc])
 			end
 	end;
 %% Check headers and initiate compression...
 fold([Response0={headers, _, Headers}|Tail], State0, Acc) ->
 	case check_resp_headers(Headers, State0) of
 		State=#state{compress=undefined} ->
-			fold(Tail, State, [vary_headers(Response0)|Acc]);
+			fold(Tail, State, [Response0|Acc]);
 		State1 ->
 			{Response, State} = gzip_headers(Response0, State1),
-			fold(Tail, State, [vary_headers(Response)|Acc])
+			fold(Tail, State, [Response|Acc])
 	end;
 %% then compress each data commands individually.
 fold([Data0={data, _, _}|Tail], State0=#state{compress=gzip}, Acc) ->
@@ -163,15 +156,6 @@ fold([SetOptions={set_options, Opts}|Tail], State=#state{
 %% Otherwise, we have an unrelated command or compression is disabled.
 fold([Command|Tail], State, Acc) ->
 	fold(Tail, State, [Command|Acc]).
-
-fold_vary_only([], State, Acc) ->
-	{lists:reverse(Acc), State};
-fold_vary_only([Response={response, _, _, _}|Tail], State, Acc) ->
-	fold_vary_only(Tail, State, [vary_response(Response)|Acc]);
-fold_vary_only([Response={headers, _, _}|Tail], State, Acc) ->
-	fold_vary_only(Tail, State, [vary_headers(Response)|Acc]);
-fold_vary_only([Command|Tail], State, Acc) ->
-	fold_vary_only(Tail, State, [Command|Acc]).
 
 buffering_to_zflush(true) -> none;
 buffering_to_zflush(false) -> sync.
@@ -206,28 +190,6 @@ gzip_headers({headers, Status, Headers0}, State) ->
 	{{headers, Status, Headers#{
 		<<"content-encoding">> => <<"gzip">>
 	}}, State#state{deflate=Z}}.
-
-vary_response({response, Status, Headers, Body}) ->
-	{response, Status, vary(Headers), Body}.
-
-vary_headers({headers, Status, Headers}) ->
-	{headers, Status, vary(Headers)}.
-
-%% We must add content-encoding to vary if it's not already there.
-vary(Headers=#{<<"vary">> := Vary}) ->
-	try cow_http_hd:parse_vary(iolist_to_binary(Vary)) of
-		'*' -> Headers;
-		List ->
-			case lists:member(<<"accept-encoding">>, List) of
-				true -> Headers;
-				false -> Headers#{<<"vary">> => [Vary, <<", accept-encoding">>]}
-			end
-	catch _:_ ->
-		%% The vary header is invalid. Probably empty. We replace it with ours.
-		Headers#{<<"vary">> => <<"accept-encoding">>}
-	end;
-vary(Headers) ->
-	Headers#{<<"vary">> => <<"accept-encoding">>}.
 
 %% It is not possible to combine zlib and the sendfile
 %% syscall as far as I can tell, because the zlib format

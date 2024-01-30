@@ -157,7 +157,7 @@ method_delete(Config) ->
 %	ConnPid = gun_open(Config),
 %	Ref = gun:request(ConnPid, <<"CONNECT">>, "localhost:8080", [
 %		{<<"accept-encoding">>, <<"gzip">>}
-%	], <<>>),
+%	]),
 %	{response, fin, 501, _} = gun:await(ConnPid, Ref),
 %	ok.
 
@@ -212,7 +212,7 @@ method_trace(Config) ->
 	ConnPid = gun_open(Config),
 	Ref = gun:request(ConnPid, <<"TRACE">>, "/", [
 		{<<"accept-encoding">>, <<"gzip">>}
-	], <<>>),
+	]),
 	{response, fin, 501, _} = gun:await(ConnPid, Ref),
 	ok.
 
@@ -230,7 +230,7 @@ expect(Config) ->
 		{<<"expect">>, <<"100-continue">>}
 	]),
 	{inform, 100, _} = gun:await(ConnPid, Ref),
-	gun:close(ConnPid).
+	ok.
 
 http10_expect(Config) ->
 	case config(protocol, Config) of
@@ -325,7 +325,7 @@ do_expect_discard_body_close(Config) ->
 	{ok, <<"POST">>} = gun:await_body(ConnPid, Ref1),
 	%% The connection is gone.
 	receive
-		{gun_down, ConnPid, _, closed, _} ->
+		{gun_down, ConnPid, _, closed, _, _} ->
 			ok
 	after 1000 ->
 		error(timeout)

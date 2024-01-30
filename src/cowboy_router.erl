@@ -160,11 +160,7 @@ compile_brackets_split(<< C, Rest/bits >>, Acc, N) ->
 -spec execute(Req, Env)
 	-> {ok, Req, Env} | {stop, Req}
 	when Req::cowboy_req:req(), Env::cowboy_middleware:env().
-execute(Req=#{host := Host, path := Path}, Env=#{dispatch := Dispatch0}) ->
-	Dispatch = case Dispatch0 of
-		{persistent_term, Key} -> persistent_term:get(Key);
-		_ -> Dispatch0
-	end,
+execute(Req=#{host := Host, path := Path}, Env=#{dispatch := Dispatch}) ->
 	case match(Dispatch, Host, Path) of
 		{ok, Handler, HandlerOpts, Bindings, HostInfo, PathInfo} ->
 			{ok, Req#{
@@ -372,8 +368,6 @@ list_match([E|Tail], [E|TailMatch], Binds) ->
 %% unless V was already defined and E isn't identical to the previous value.
 list_match([E|Tail], [V|TailMatch], Binds) when is_atom(V) ->
 	case Binds of
-		%% @todo This isn't right, the constraint must be applied FIRST
-		%% otherwise we can't check for example ints in both host/path.
 		#{V := E} ->
 			list_match(Tail, TailMatch, Binds);
 		#{V := _} ->
@@ -516,9 +510,7 @@ match_test_() ->
 		{<<"erlang.fr">>, '_',
 			{ok, match_erlang_ext, [], #{ext => <<"fr">>}}},
 		{<<"any">>, <<"/users/444/friends">>,
-			{ok, match_users_friends, [], #{id => <<"444">>}}},
-		{<<"any">>, <<"/users//friends">>,
-			{ok, match_users_friends, [], #{id => <<>>}}}
+			{ok, match_users_friends, [], #{id => <<"444">>}}}
 	],
 	[{lists:flatten(io_lib:format("~p, ~p", [H, P])), fun() ->
 		{ok, Handler, Opts, Binds, undefined, undefined}
@@ -553,20 +545,14 @@ match_info_test_() ->
 	end} || {H, P, R} <- Tests].
 
 match_constraints_test() ->
-	Dispatch0 = [{'_', [],
+	Dispatch = [{'_', [],
 		[{[<<"path">>, value], [{value, int}], match, []}]}],
-	{ok, _, [], #{value := 123}, _, _} = match(Dispatch0,
+	{ok, _, [], #{value := 123}, _, _} = match(Dispatch,
 		<<"ninenines.eu">>, <<"/path/123">>),
-	{ok, _, [], #{value := 123}, _, _} = match(Dispatch0,
+	{ok, _, [], #{value := 123}, _, _} = match(Dispatch,
 		<<"ninenines.eu">>, <<"/path/123/">>),
-	{error, notfound, path} = match(Dispatch0,
+	{error, notfound, path} = match(Dispatch,
 		<<"ninenines.eu">>, <<"/path/NaN/">>),
-	Dispatch1 = [{'_', [],
-		[{[<<"path">>, value, <<"more">>], [{value, nonempty}], match, []}]}],
-	{ok, _, [], #{value := <<"something">>}, _, _} = match(Dispatch1,
-		<<"ninenines.eu">>, <<"/path/something/more">>),
-	{error, notfound, path} = match(Dispatch1,
-		<<"ninenines.eu">>, <<"/path//more">>),
 	Dispatch2 = [{'_', [], [{[<<"path">>, username],
 		[{username, fun(_, Value) ->
 			case cowboy_bstr:to_lower(Value) of

@@ -22,4 +22,4 @@ start(_Type, _Args) ->
 	hello_world_sup:start_link().
 
 stop(_State) ->
-	ok = cowboy:stop_listener(http).
+	ok.

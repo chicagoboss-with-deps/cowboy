@@ -34,8 +34,6 @@ init_commands(_, _, #state{test=crash_in_terminate}) ->
 	[{response, 200, #{<<"content-length">> => <<"12">>}, <<"Hello world!">>}, stop];
 init_commands(_, _, #state{test=crash_in_early_error}) ->
 	error(crash);
-init_commands(_, _, #state{test=flow_after_body_fully_read}) ->
-	[];
 init_commands(_, _, #state{test=set_options_ignore_unknown}) ->
 	[
 		{set_options, #{unknown_options => true}},
@@ -44,16 +42,16 @@ init_commands(_, _, #state{test=set_options_ignore_unknown}) ->
 	];
 init_commands(_, _, State=#state{test=shutdown_on_stream_stop}) ->
 	Spawn = init_process(false, State),
-	[{spawn, Spawn, 5000}, {headers, 200, #{}}, stop];
+	[{headers, 200, #{}}, {spawn, Spawn, 5000}, stop];
 init_commands(_, _, State=#state{test=shutdown_on_socket_close}) ->
 	Spawn = init_process(false, State),
-	[{spawn, Spawn, 5000}, {headers, 200, #{}}];
+	[{headers, 200, #{}}, {spawn, Spawn, 5000}];
 init_commands(_, _, State=#state{test=shutdown_timeout_on_stream_stop}) ->
 	Spawn = init_process(true, State),
-	[{spawn, Spawn, 2000}, {headers, 200, #{}}, stop];
+	[{headers, 200, #{}}, {spawn, Spawn, 2000}, stop];
 init_commands(_, _, State=#state{test=shutdown_timeout_on_socket_close}) ->
 	Spawn = init_process(true, State),
-	[{spawn, Spawn, 2000}, {headers, 200, #{}}];
+	[{headers, 200, #{}}, {spawn, Spawn, 2000}];
 init_commands(_, _, State=#state{test=switch_protocol_after_headers}) ->
 	[{headers, 200, #{}}, {switch_protocol, #{}, ?MODULE, State}];
 init_commands(_, _, State=#state{test=switch_protocol_after_headers_data}) ->
@@ -83,8 +81,6 @@ init_process(TrapExit, #state{pid=Pid}) ->
 
 data(_, _, _, #state{test=crash_in_data}) ->
 	error(crash);
-data(_, fin, <<"Hello world!">>, State=#state{test=flow_after_body_fully_read}) ->
-	{[{flow, 12}, {response, 200, #{}, <<"{}">>}], State};
 data(StreamID, IsFin, Data, State=#state{pid=Pid}) ->
 	Pid ! {Pid, self(), data, StreamID, IsFin, Data, State},
 	{[], State}.

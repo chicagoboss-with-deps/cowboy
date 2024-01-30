@@ -23,4 +23,4 @@ start(_Type, _Args) ->
 	eventsource_sup:start_link().
 
 stop(_State) ->
-	ok = cowboy:stop_listener(http).
+	ok.

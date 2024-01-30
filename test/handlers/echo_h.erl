@@ -25,23 +25,11 @@ echo(<<"read_body">>, Req0, Opts) ->
 			timer:sleep(500),
 			cowboy_req:read_body(Req0);
 		<<"/full", _/bits>> -> read_body(Req0, <<>>);
-		<<"/auto-sync", _/bits>> -> read_body_auto_sync(Req0, <<>>);
-		<<"/auto-async", _/bits>> -> read_body_auto_async(Req0, <<>>);
 		<<"/length", _/bits>> ->
 			{_, _, Req1} = read_body(Req0, <<>>),
 			Length = cowboy_req:body_length(Req1),
 			{ok, integer_to_binary(Length), Req1};
 		<<"/opts", _/bits>> -> cowboy_req:read_body(Req0, Opts);
-		<<"/spawn", _/bits>> ->
-			Parent = self(),
-			Pid = spawn_link(fun() ->
-				Parent ! {self(), cowboy_req:read_body(Req0)}
-			end),
-			receive
-				{Pid, Msg} -> Msg
-			after 5000 ->
-				error(timeout)
-			end;
 		_ -> cowboy_req:read_body(Req0)
 	end,
 	{ok, cowboy_req:reply(200, #{}, Body, Req), Opts};
@@ -94,10 +82,6 @@ echo(<<"match">>, Req, Opts) ->
 			Match
 	end,
 	{ok, cowboy_req:reply(200, #{}, value_to_iodata(Value), Req), Opts};
-echo(<<"filter_then_parse_cookies">>, Req0, Opts) ->
-	Req = cowboy_req:filter_cookies([cake, color], Req0),
-	Value = cowboy_req:parse_cookies(Req),
-	{ok, cowboy_req:reply(200, #{}, value_to_iodata(Value), Req), Opts};
 echo(What, Req, Opts) ->
 	Key = binary_to_atom(What, latin1),
 	Value = case cowboy_req:path(Req) of
@@ -122,25 +106,6 @@ read_body(Req0, Acc) ->
 	case cowboy_req:read_body(Req0) of
 		{ok, Data, Req} -> {ok, << Acc/binary, Data/binary >>, Req};
 		{more, Data, Req} -> read_body(Req, << Acc/binary, Data/binary >>)
-	end.
-
-read_body_auto_sync(Req0, Acc) ->
-	Opts = #{length => auto, period => infinity},
-	case cowboy_req:read_body(Req0, Opts) of
-		{ok, Data, Req} -> {ok, << Acc/binary, Data/binary >>, Req};
-		{more, Data, Req} -> read_body_auto_sync(Req, << Acc/binary, Data/binary >>)
-	end.
-
-read_body_auto_async(Req, Acc) ->
-	read_body_auto_async(Req, make_ref(), Acc).
-
-read_body_auto_async(Req, ReadBodyRef, Acc) ->
-	cowboy_req:cast({read_body, self(), ReadBodyRef, auto, infinity}, Req),
-	receive
-		{request_body, ReadBodyRef, nofin, Data} ->
-			read_body_auto_async(Req, ReadBodyRef, <<Acc/binary, Data/binary>>);
-		{request_body, ReadBodyRef, fin, _, Data} ->
-			{ok, <<Acc/binary, Data/binary>>, Req}
 	end.
 
 value_to_iodata(V) when is_integer(V) -> integer_to_binary(V);

@@ -15,8 +15,7 @@ start(_Type, _Args) ->
 		{'_', [
 			{"/[...]", cowboy_static, {priv_dir, file_server, "", [
 				{mimetypes, cow_mimetypes, all},
-				{dir_handler, directory_h},
-				{charset, <<"utf-8">>}
+				{dir_handler, directory_h}
 			]}}
 		]}
 	]),
@@ -27,4 +26,4 @@ start(_Type, _Args) ->
 	file_server_sup:start_link().
 
 stop(_State) ->
-	ok = cowboy:stop_listener(http).
+	ok.

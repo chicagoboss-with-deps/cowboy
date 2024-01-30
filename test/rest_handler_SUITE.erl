@@ -52,7 +52,6 @@ init_dispatch(_) ->
 		{"/content_types_accepted", content_types_accepted_h, []},
 		{"/content_types_provided", content_types_provided_h, []},
 		{"/delete_resource", delete_resource_h, []},
-		{"/create_resource", create_resource_h, []},
 		{"/expires", expires_h, []},
 		{"/generate_etag", generate_etag_h, []},
 		{"/if_range", if_range_h, []},
@@ -127,7 +126,7 @@ do_accept_callback_true(Config, Fun) ->
 	ok.
 
 charset_in_content_types_provided(Config) ->
-	doc("When a charset is matched explicitly in content_types_provided, "
+	doc("When a charset is matched explictly in content_types_provided, "
 		"that charset is used and the charsets_provided callback is ignored."),
 	ConnPid = gun_open(Config),
 	Ref = gun:get(ConnPid, "/charset_in_content_types_provided", [
@@ -360,24 +359,6 @@ content_types_accepted_param(Config) ->
 	{response, fin, 204, _} = gun:await(ConnPid, Ref),
 	ok.
 
-content_types_accepted_wildcard(Config) ->
-	doc("When a wildcard is returned from the content_types_accepted "
-		"callback, any content-type must be accepted."),
-	ConnPid = gun_open(Config),
-	Ref1 = gun:put(ConnPid, "/content_types_accepted?wildcard", [
-		{<<"accept-encoding">>, <<"gzip">>},
-		{<<"content-type">>, <<"text/plain">>}
-	]),
-	gun:data(ConnPid, Ref1, fin, "Hello world!"),
-	{response, fin, 204, _} = gun:await(ConnPid, Ref1),
-	Ref2 = gun:put(ConnPid, "/content_types_accepted?wildcard", [
-		{<<"accept-encoding">>, <<"gzip">>},
-		{<<"content-type">>, <<"application/vnd.plain;charset=UTF-8">>}
-	]),
-	gun:data(ConnPid, Ref2, fin, "Hello world!"),
-	{response, fin, 204, _} = gun:await(ConnPid, Ref2),
-	ok.
-
 content_types_accepted_wildcard_param_no_content_type_param(Config) ->
 	doc("When a wildcard is returned for parameters from the "
 		"content_types_accepted callback, a content-type header "
@@ -475,29 +456,6 @@ delete_resource_missing(Config) ->
 	{response, _, 500, _} = gun:await(ConnPid, Ref),
 	ok.
 
-create_resource_created(Config) ->
-	doc("POST to an existing resource to create a new resource. "
-		"When the accept callback returns {created, NewURI}, "
-		"the expected reply is 201 Created."),
-	ConnPid = gun_open(Config),
-	Ref = gun:post(ConnPid, "/create_resource?created", [
-		{<<"content-type">>, <<"application/text">>}
-	], <<"hello">>, #{}),
-	{response, _, 201, _} = gun:await(ConnPid, Ref),
-	ok.
-
-create_resource_see_other(Config) ->
-	doc("POST to an existing resource to create a new resource. "
-		"When the accept callback returns {see_other, NewURI}, "
-		"the expected reply is 303 See Other with a location header set."),
-	ConnPid = gun_open(Config),
-	Ref = gun:post(ConnPid, "/create_resource?see_other", [
-		{<<"content-type">>, <<"application/text">>}
-	], <<"hello">>, #{}),
-	{response, _, 303, RespHeaders} = gun:await(ConnPid, Ref),
-	{_, _} = lists:keyfind(<<"location">>, 1, RespHeaders),
-	ok.
-
 error_on_malformed_accept(Config) ->
 	doc("A malformed Accept header must result in a 400 response."),
 	do_error_on_malformed_header(Config, <<"accept">>).
@@ -565,17 +523,6 @@ generate_etag_missing(Config) ->
 		"the generate_etag callback is not exported."),
 	ConnPid = gun_open(Config),
 	Ref = gun:get(ConnPid, "/generate_etag?missing", [
-		{<<"accept-encoding">>, <<"gzip">>}
-	]),
-	{response, _, 200, Headers} = gun:await(ConnPid, Ref),
-	false = lists:keyfind(<<"etag">>, 1, Headers),
-	ok.
-
-generate_etag_undefined(Config) ->
-	doc("The etag header must not be sent when "
-		"the generate_etag callback returns undefined."),
-	ConnPid = gun_open(Config),
-	Ref = gun:get(ConnPid, "/generate_etag?undefined", [
 		{<<"accept-encoding">>, <<"gzip">>}
 	]),
 	{response, _, 200, Headers} = gun:await(ConnPid, Ref),

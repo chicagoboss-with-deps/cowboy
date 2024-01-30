@@ -30,10 +30,6 @@ do(<<"set_resp_cookie4">>, Req0, Opts) ->
 do(<<"set_resp_header">>, Req0, Opts) ->
 	Req = cowboy_req:set_resp_header(<<"content-type">>, <<"text/plain">>, Req0),
 	{ok, cowboy_req:reply(200, #{}, "OK", Req), Opts};
-do(<<"set_resp_header_cookie">>, Req0, Opts) ->
-	ct_helper:ignore(cowboy_req, set_resp_header, 3),
-	Req = cowboy_req:set_resp_header(<<"set-cookie">>, <<"name=value">>, Req0),
-	{ok, cowboy_req:reply(200, #{}, "OK", Req), Opts};
 do(<<"set_resp_header_server">>, Req0, Opts) ->
 	Req = cowboy_req:set_resp_header(<<"server">>, <<"nginx">>, Req0),
 	{ok, cowboy_req:reply(200, #{}, "OK", Req), Opts};
@@ -41,22 +37,6 @@ do(<<"set_resp_headers">>, Req0, Opts) ->
 	Req = cowboy_req:set_resp_headers(#{
 		<<"content-type">> => <<"text/plain">>,
 		<<"content-encoding">> => <<"compress">>
-	}, Req0),
-	{ok, cowboy_req:reply(200, #{}, "OK", Req), Opts};
-do(<<"set_resp_headers_cookie">>, Req0, Opts) ->
-	ct_helper:ignore(cowboy_req, set_resp_headers, 2),
-	Req = cowboy_req:set_resp_headers(#{
-		<<"set-cookie">> => <<"name=value">>
-	}, Req0),
-	{ok, cowboy_req:reply(200, #{}, "OK", Req), Opts};
-do(<<"set_resp_headers_http11">>, Req0, Opts) ->
-	Req = cowboy_req:set_resp_headers(#{
-		<<"connection">> => <<"custom-header, close">>,
-		<<"custom-header">> => <<"value">>,
-		<<"keep-alive">> => <<"timeout=5, max=1000">>,
-		<<"proxy-connection">> => <<"close">>,
-		<<"transfer-encoding">> => <<"chunked">>,
-		<<"upgrade">> => <<"HTTP/1.1">>
 	}, Req0),
 	{ok, cowboy_req:reply(200, #{}, "OK", Req), Opts};
 do(<<"resp_header_defined">>, Req0, Opts) ->
@@ -140,10 +120,6 @@ do(<<"inform2">>, Req0, Opts) ->
 		<<"twice">> ->
 			cowboy_req:inform(102, Req0),
 			cowboy_req:inform(102, Req0);
-		<<"after_reply">> ->
-			ct_helper:ignore(cowboy_req, inform, 3),
-			Req1 = cowboy_req:reply(200, Req0),
-			cowboy_req:inform(102, Req1);
 		Status ->
 			cowboy_req:inform(binary_to_integer(Status), Req0)
 	end,
@@ -157,16 +133,9 @@ do(<<"inform3">>, Req0, Opts) ->
 		<<"error">> ->
 			ct_helper:ignore(cowboy_req, inform, 3),
 			cowboy_req:inform(ok, Headers, Req0);
-		<<"set_cookie">> ->
-			ct_helper:ignore(cowboy_req, inform, 3),
-			cowboy_req:inform(102, #{<<"set-cookie">> => <<"name=value">>}, Req0);
 		<<"twice">> ->
 			cowboy_req:inform(102, Headers, Req0),
 			cowboy_req:inform(102, Headers, Req0);
-		<<"after_reply">> ->
-			ct_helper:ignore(cowboy_req, inform, 3),
-			Req1 = cowboy_req:reply(200, Req0),
-			cowboy_req:inform(102, Headers, Req1);
 		Status ->
 			cowboy_req:inform(binary_to_integer(Status), Headers, Req0)
 	end,
@@ -192,9 +161,6 @@ do(<<"reply3">>, Req0, Opts) ->
 		<<"error">> ->
 			ct_helper:ignore(cowboy_req, reply, 4),
 			cowboy_req:reply(200, ok, Req0);
-		<<"set_cookie">> ->
-			ct_helper:ignore(cowboy_req, reply, 4),
-			cowboy_req:reply(200, #{<<"set-cookie">> => <<"name=value">>}, Req0);
 		Status ->
 			cowboy_req:reply(binary_to_integer(Status),
 				#{<<"content-type">> => <<"text/plain">>}, Req0)
@@ -205,15 +171,6 @@ do(<<"reply4">>, Req0, Opts) ->
 		<<"error">> ->
 			ct_helper:ignore(erlang, iolist_size, 1),
 			cowboy_req:reply(200, #{}, ok, Req0);
-		<<"set_cookie">> ->
-			ct_helper:ignore(cowboy_req, reply, 4),
-			cowboy_req:reply(200, #{<<"set-cookie">> => <<"name=value">>}, <<"OK">>, Req0);
-		<<"204body">> ->
-			ct_helper:ignore(cowboy_req, do_reply_ensure_no_body, 4),
-			cowboy_req:reply(204, #{}, <<"OK">>, Req0);
-		<<"304body">> ->
-			ct_helper:ignore(cowboy_req, do_reply_ensure_no_body, 4),
-			cowboy_req:reply(304, #{}, <<"OK">>, Req0);
 		Status ->
 			cowboy_req:reply(binary_to_integer(Status), #{}, <<"OK">>, Req0)
 	end,
@@ -232,22 +189,8 @@ do(<<"stream_reply2">>, Req0, Opts) ->
 		<<"204">> ->
 			Req = cowboy_req:stream_reply(204, Req0),
 			{ok, Req, Opts};
-		<<"204body">> ->
-			ct_helper:ignore(cowboy_req, stream_body, 3),
-			Req = cowboy_req:stream_reply(204, Req0),
-			stream_body(Req),
-			{ok, Req, Opts};
-		<<"304body">> ->
-			ct_helper:ignore(cowboy_req, stream_body, 3),
+		<<"304">> ->
 			Req = cowboy_req:stream_reply(304, Req0),
-			stream_body(Req),
-			{ok, Req, Opts};
-		<<"twice">> ->
-			ct_helper:ignore(cowboy_req, stream_reply, 3),
-			Req1 = cowboy_req:stream_reply(200, Req0),
-			%% We will crash here so the body shouldn't be sent.
-			Req = cowboy_req:stream_reply(200, Req1),
-			stream_body(Req),
 			{ok, Req, Opts};
 		Status ->
 			Req = cowboy_req:stream_reply(binary_to_integer(Status), Req0),
@@ -259,9 +202,6 @@ do(<<"stream_reply3">>, Req0, Opts) ->
 		<<"error">> ->
 			ct_helper:ignore(cowboy_req, stream_reply, 3),
 			cowboy_req:stream_reply(200, ok, Req0);
-		<<"set_cookie">> ->
-			ct_helper:ignore(cowboy_req, stream_reply, 3),
-			cowboy_req:stream_reply(200, #{<<"set-cookie">> => <<"name=value">>}, Req0);
 		Status ->
 			cowboy_req:stream_reply(binary_to_integer(Status),
 				#{<<"content-type">> => <<"text/plain">>}, Req0)
@@ -280,11 +220,6 @@ do(<<"stream_body">>, Req0, Opts) ->
 			cowboy_req:stream_body(<<"Hello ">>, nofin, Req),
 			cowboy_req:stream_body(<<"world">>, nofin, Req),
 			cowboy_req:stream_body(<<"!">>, fin, Req),
-			{ok, Req, Opts};
-		<<"loop">> ->
-			Req = cowboy_req:stream_reply(200, Req0),
-			_ = [cowboy_req:stream_body(<<0:1000000/unit:8>>, nofin, Req)
-				|| _ <- lists:seq(1, 32)],
 			{ok, Req, Opts};
 		<<"nofin">> ->
 			Req = cowboy_req:stream_reply(200, Req0),
@@ -306,21 +241,6 @@ do(<<"stream_body">>, Req0, Opts) ->
 			Req = cowboy_req:stream_reply(200, Req0),
 			cowboy_req:stream_body(<<"Hello! ">>, nofin, Req),
 			cowboy_req:stream_body({sendfile, 0, AppSize, AppFile}, fin, Req),
-			{ok, Req, Opts};
-		<<"spawn">> ->
-			Req = cowboy_req:stream_reply(200, Req0),
-			Parent = self(),
-			Pid = spawn(fun() ->
-				cowboy_req:stream_body(<<"Hello ">>, nofin, Req),
-				cowboy_req:stream_body(<<"world">>, nofin, Req),
-				cowboy_req:stream_body(<<"!">>, fin, Req),
-				Parent ! {self(), ok}
-			end),
-			receive
-				{Pid, ok} -> ok
-			after 5000 ->
-				error(timeout)
-			end,
 			{ok, Req, Opts};
 		_ ->
 			%% Call stream_body without initiating streaming.
@@ -411,20 +331,9 @@ do(<<"stream_trailers">>, Req0, Opts) ->
 			Req = cowboy_req:stream_reply(200, #{
 				<<"trailer">> => <<"grpc-status">>
 			}, Req0),
-			%% The size should be larger than StreamSize and ConnSize
-			cowboy_req:stream_body(<<0:80000000>>, nofin, Req),
+			cowboy_req:stream_body(<<0:800000>>, nofin, Req),
 			cowboy_req:stream_trailers(#{
 				<<"grpc-status">> => <<"0">>
-			}, Req),
-			{ok, Req, Opts};
-		<<"set_cookie">> ->
-			ct_helper:ignore(cowboy_req, stream_trailers, 2),
-			Req = cowboy_req:stream_reply(200, #{
-				<<"trailer">> => <<"set-cookie">>
-			}, Req0),
-			cowboy_req:stream_body(<<"Hello world!">>, nofin, Req),
-			cowboy_req:stream_trailers(#{
-				<<"set-cookie">> => <<"name=value">>
 			}, Req),
 			{ok, Req, Opts};
 		_ ->
@@ -439,8 +348,6 @@ do(<<"stream_trailers">>, Req0, Opts) ->
 	end;
 do(<<"push">>, Req, Opts) ->
 	case cowboy_req:binding(arg, Req) of
-		<<"read_body">> ->
-			cowboy_req:push("/echo/read_body", #{}, Req, #{});
 		<<"method">> ->
 			cowboy_req:push("/static/style.css", #{<<"accept">> => <<"text/css">>}, Req,
 				#{method => <<"HEAD">>});
@@ -450,11 +357,6 @@ do(<<"push">>, Req, Opts) ->
 		<<"qs">> ->
 			cowboy_req:push("/static/style.css", #{<<"accept">> => <<"text/css">>}, Req,
 				#{qs => <<"server=cowboy&version=2.0">>});
-		<<"after_reply">> ->
-			ct_helper:ignore(cowboy_req, push, 4),
-			Req1 = cowboy_req:reply(200, Req),
-			%% We will crash here so no need to worry about propagating Req1.
-			cowboy_req:push("/static/style.css", #{<<"accept">> => <<"text/css">>}, Req1);
 		_ ->
 			cowboy_req:push("/static/style.css", #{<<"accept">> => <<"text/css">>}, Req),
 			%% The text/plain mime is not defined by default, so a 406 will be returned.

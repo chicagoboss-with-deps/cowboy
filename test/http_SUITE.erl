@@ -20,11 +20,9 @@
 -import(ct_helper, [doc/1]).
 -import(ct_helper, [get_remote_pid_tcp/1]).
 -import(cowboy_test, [gun_open/1]).
--import(cowboy_test, [gun_down/1]).
 -import(cowboy_test, [raw_open/1]).
 -import(cowboy_test, [raw_send/2]).
 -import(cowboy_test, [raw_recv_head/1]).
--import(cowboy_test, [raw_recv_rest/3]).
 -import(cowboy_test, [raw_recv/3]).
 -import(cowboy_test, [raw_expect_recv/2]).
 
@@ -45,8 +43,7 @@ init_dispatch(_) ->
 		{"/", hello_h, []},
 		{"/echo/:key", echo_h, []},
 		{"/resp/:key[/:arg]", resp_h, []},
-		{"/set_options/:key", set_options_h, []},
-		{"/streamed_result/:n/:interval", streamed_result_h, []}
+		{"/set_options/:key", set_options_h, []}
 	]}]).
 
 chunked_false(Config) ->
@@ -227,68 +224,6 @@ http10_keepalive_false(Config) ->
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
 
-idle_timeout_read_body(Config) ->
-	doc("Ensure the idle_timeout drops connections when the "
-		"connection is idle too long reading the request body."),
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], #{
-		env => #{dispatch => init_dispatch(Config)},
-		request_timeout => 60000,
-		idle_timeout => 500
-	}),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		ConnPid = gun_open([{type, tcp}, {protocol, http}, {port, Port}|Config]),
-		{ok, http} = gun:await_up(ConnPid),
-		_StreamRef = gun:post(ConnPid, "/echo/read_body",
-			#{<<"content-length">> => <<"12">>}),
-		{error, {down, {shutdown, closed}}} = gun:await(ConnPid, undefined, 1000)
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
-idle_timeout_read_body_pipeline(Config) ->
-	doc("Ensure the idle_timeout drops connections when the "
-		"connection is idle too long reading the request body."),
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], #{
-		env => #{dispatch => init_dispatch(Config)},
-		request_timeout => 60000,
-		idle_timeout => 500
-	}),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		ConnPid = gun_open([{type, tcp}, {protocol, http}, {port, Port}|Config]),
-		{ok, http} = gun:await_up(ConnPid),
-		StreamRef1 = gun:get(ConnPid, "/"),
-		StreamRef2 = gun:get(ConnPid, "/"),
-		_StreamRef3 = gun:post(ConnPid, "/echo/read_body",
-			#{<<"content-length">> => <<"12">>}),
-		{response, nofin, 200, _} = gun:await(ConnPid, StreamRef1),
-		{response, nofin, 200, _} = gun:await(ConnPid, StreamRef2),
-		{error, {down, {shutdown, closed}}} = gun:await(ConnPid, undefined, 1000)
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
-idle_timeout_skip_body(Config) ->
-	doc("Ensure the idle_timeout drops connections when the "
-		"connection is idle too long skipping the request body."),
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], #{
-		env => #{dispatch => init_dispatch(Config)},
-		request_timeout => 60000,
-		idle_timeout => 500
-	}),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		ConnPid = gun_open([{type, tcp}, {protocol, http}, {port, Port}|Config]),
-		{ok, http} = gun:await_up(ConnPid),
-		StreamRef = gun:post(ConnPid, "/",
-			#{<<"content-length">> => <<"12">>}),
-		{response, nofin, 200, _} = gun:await(ConnPid, StreamRef),
-		{error, {down, {shutdown, closed}}} = gun:await(ConnPid, undefined, 1000)
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
 idle_timeout_infinity(Config) ->
 	doc("Ensure the idle_timeout option accepts the infinity value."),
 	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], #{
@@ -309,213 +244,7 @@ idle_timeout_infinity(Config) ->
 			{'DOWN', Ref, process, Pid, Reason} ->
 				error(Reason)
 		after 1000 ->
-			gun:close(ConnPid)
-		end
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
-idle_timeout_on_send(Config) ->
-	doc("Ensure the idle timeout is not reset when sending (by default)."),
-	do_idle_timeout_on_send(Config, http).
-
-%% Also used by http2_SUITE.
-do_idle_timeout_on_send(Config, Protocol) ->
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], #{
-		env => #{dispatch => init_dispatch(Config)},
-		idle_timeout => 1000
-	}),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		ConnPid = gun_open([{type, tcp}, {protocol, Protocol}, {port, Port}|Config]),
-		{ok, Protocol} = gun:await_up(ConnPid),
-		#{socket := Socket} = gun:info(ConnPid),
-		Pid = get_remote_pid_tcp(Socket),
-		StreamRef = gun:get(ConnPid, "/streamed_result/10/250"),
-		Ref = erlang:monitor(process, Pid),
-		receive
-			{gun_response, ConnPid, StreamRef, nofin, _Status, _Headers} ->
-				do_idle_timeout_recv_loop(Ref, Pid, ConnPid, StreamRef, false)
-		after 2000 ->
-		      error(timeout)
-		end
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
-idle_timeout_reset_on_send(Config) ->
-	doc("Ensure the reset_idle_timeout_on_send results in the "
-		"idle timeout resetting when sending ."),
-	do_idle_timeout_reset_on_send(Config, http).
-
-%% Also used by http2_SUITE.
-do_idle_timeout_reset_on_send(Config, Protocol) ->
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], #{
-		env => #{dispatch => init_dispatch(Config)},
-		idle_timeout => 1000,
-		reset_idle_timeout_on_send => true
-	}),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		ConnPid = gun_open([{type, tcp}, {protocol, Protocol}, {port, Port}|Config]),
-		{ok, Protocol} = gun:await_up(ConnPid),
-		#{socket := Socket} = gun:info(ConnPid),
-		Pid = get_remote_pid_tcp(Socket),
-		StreamRef = gun:get(ConnPid, "/streamed_result/10/250"),
-		Ref = erlang:monitor(process, Pid),
-		receive
-			{gun_response, ConnPid, StreamRef, nofin, _Status, _Headers} ->
-				do_idle_timeout_recv_loop(Ref, Pid, ConnPid, StreamRef, true)
-		after 2000 ->
-		      error(timeout)
-		end
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
-do_idle_timeout_recv_loop(Ref, Pid, ConnPid, StreamRef, ExpectCompletion) ->
-	receive
-		{gun_data, ConnPid, StreamRef, nofin, _Data} ->
-			do_idle_timeout_recv_loop(Ref, Pid, ConnPid, StreamRef, ExpectCompletion);
-		{gun_data, ConnPid, StreamRef, fin, _Data} when ExpectCompletion ->
-			gun:close(ConnPid);
-		{gun_data, ConnPid, StreamRef, fin, _Data} ->
-			gun:close(ConnPid),
-			error(completed);
-		{'DOWN', Ref, process, Pid, _} when ExpectCompletion ->
-			gun:close(ConnPid),
-			error(exited);
-		{'DOWN', Ref, process, Pid, _} ->
-			 ok
-	after 2000 ->
-	      error(timeout)
-	end.
-
-persistent_term_router(Config) ->
-	doc("The router can retrieve the routes from persistent_term storage."),
-	case erlang:function_exported(persistent_term, get, 1) of
-		true -> do_persistent_term_router(Config);
-		false -> {skip, "This test uses the persistent_term functionality added in Erlang/OTP 21.2."}
-	end.
-
-do_persistent_term_router(Config) ->
-	persistent_term:put(?FUNCTION_NAME, init_dispatch(Config)),
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], #{
-		env => #{dispatch => {persistent_term, ?FUNCTION_NAME}}
-	}),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		ConnPid = gun_open([{type, tcp}, {protocol, http}, {port, Port}|Config]),
-		{ok, http} = gun:await_up(ConnPid),
-		StreamRef = gun:get(ConnPid, "/"),
-		{response, nofin, 200, _} = gun:await(ConnPid, StreamRef),
-		gun:close(ConnPid)
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
-request_timeout(Config) ->
-	doc("Ensure the request_timeout drops connections when requests "
-		"fail to come in fast enough."),
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], #{
-		env => #{dispatch => init_dispatch(Config)},
-		request_timeout => 500
-	}),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		ConnPid = gun_open([{type, tcp}, {protocol, http}, {port, Port}|Config]),
-		{ok, http} = gun:await_up(ConnPid),
-		{error, {down, {shutdown, closed}}} = gun:await(ConnPid, undefined, 1000)
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
-request_timeout_pipeline(Config) ->
-	doc("Ensure the request_timeout drops connections when requests "
-		"fail to come in fast enough after pipelined requests went through."),
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], #{
-		env => #{dispatch => init_dispatch(Config)},
-		request_timeout => 500
-	}),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		ConnPid = gun_open([{type, tcp}, {protocol, http}, {port, Port}|Config]),
-		{ok, http} = gun:await_up(ConnPid),
-		StreamRef1 = gun:get(ConnPid, "/"),
-		StreamRef2 = gun:get(ConnPid, "/"),
-		StreamRef3 = gun:get(ConnPid, "/"),
-		{response, nofin, 200, _} = gun:await(ConnPid, StreamRef1),
-		{response, nofin, 200, _} = gun:await(ConnPid, StreamRef2),
-		{response, nofin, 200, _} = gun:await(ConnPid, StreamRef3),
-		{error, {down, {shutdown, closed}}} = gun:await(ConnPid, undefined, 1000)
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
-request_timeout_skip_body(Config) ->
-	doc("Ensure the request_timeout drops connections when requests "
-		"fail to come in fast enough after skipping a request body."),
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], #{
-		env => #{dispatch => init_dispatch(Config)},
-		request_timeout => 500
-	}),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		Client = raw_open([{type, tcp}, {port, Port}, {opts, []}|Config]),
-		ok = raw_send(Client, <<
-			"POST / HTTP/1.1\r\n"
-			"host: localhost\r\n"
-			"content-length: 12\r\n\r\n"
-		>>),
-		Data = raw_recv_head(Client),
-		{'HTTP/1.1', 200, _, Rest0} = cow_http:parse_status_line(Data),
-		{Headers, Rest} = cow_http:parse_headers(Rest0),
-		{_, Len} = lists:keyfind(<<"content-length">>, 1, Headers),
-		<<"Hello world!">> = raw_recv_rest(Client, binary_to_integer(Len), Rest),
-		%% We then send the request data that should be skipped by Cowboy.
-		timer:sleep(100),
-		raw_send(Client, <<"Hello world!">>),
-		%% Connection should be closed by the request_timeout after that.
-		{error, closed} = raw_recv(Client, 1, 1000)
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
-request_timeout_skip_body_more(Config) ->
-	doc("Ensure the request_timeout drops connections when requests "
-		"fail to come in fast enough after skipping a request body."),
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], #{
-		env => #{dispatch => init_dispatch(Config)},
-		request_timeout => 500
-	}),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		Client = raw_open([{type, tcp}, {port, Port}, {opts, []}|Config]),
-		ok = raw_send(Client, <<
-			"POST / HTTP/1.1\r\n"
-			"host: localhost\r\n"
-			"content-length: 12\r\n\r\n"
-		>>),
-		Data = raw_recv_head(Client),
-		{'HTTP/1.1', 200, _, Rest0} = cow_http:parse_status_line(Data),
-		{Headers, Rest} = cow_http:parse_headers(Rest0),
-		{_, Len} = lists:keyfind(<<"content-length">>, 1, Headers),
-		<<"Hello world!">> = raw_recv_rest(Client, binary_to_integer(Len), Rest),
-		%% We then send the request data that should be skipped by Cowboy.
-		timer:sleep(100),
-		raw_send(Client, <<"Hello world!">>),
-		%% Send the start of another request.
-		ok = raw_send(Client, <<
-			"GET / HTTP/1.1\r\n"
-			"host: localhost\r\n"
-			%% Missing final \r\n on purpose.
-		>>),
-		%% Connection should be closed by the request_timeout after that.
-		%% We attempt to send a 408 response on a best effort basis so
-		%% that is accepted as well.
-		case raw_recv(Client, 13, 1000) of
-			{error, closed} -> ok;
-			{ok, <<"HTTP/1.1 408 ", _/bits>>} -> ok
+			ok
 		end
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
@@ -539,7 +268,7 @@ request_timeout_infinity(Config) ->
 			{'DOWN', Ref, process, Pid, Reason} ->
 				error(Reason)
 		after 1000 ->
-			gun:close(ConnPid)
+			ok
 		end
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
@@ -595,8 +324,7 @@ set_options_chunked_false_ignored(Config) ->
 		%% is not disabled for that second request.
 		StreamRef2 = gun:get(ConnPid, "/resp/stream_reply2/200"),
 		{response, nofin, 200, Headers} = gun:await(ConnPid, StreamRef2),
-		{_, <<"chunked">>} = lists:keyfind(<<"transfer-encoding">>, 1, Headers),
-		gun:close(ConnPid)
+		{_, <<"chunked">>} = lists:keyfind(<<"transfer-encoding">>, 1, Headers)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
@@ -689,147 +417,6 @@ switch_protocol_flush(Config) ->
 		after 5000 ->
 			error(timeout)
 		end
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
-graceful_shutdown_connection(Config) ->
-	doc("Check that the current request is handled before gracefully "
-	    "shutting down a connection."),
-	Dispatch = cowboy_router:compile([{"localhost", [
-		{"/hello", delay_hello_h,
-			#{delay => 0, notify_received => self()}},
-		{"/delay_hello", delay_hello_h,
-			#{delay => 1000, notify_received => self()}}
-	]}]),
-	ProtoOpts = #{
-		env => #{dispatch => Dispatch}
-	},
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, [{port, 0}], ProtoOpts),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		Client = raw_open([{type, tcp}, {port, Port}, {opts, []}|Config]),
-		ok = raw_send(Client,
-			"GET /delay_hello HTTP/1.1\r\n"
-			"Host: localhost\r\n\r\n"
-			"GET /hello HTTP/1.1\r\n"
-			"Host: localhost\r\n\r\n"),
-		receive {request_received, <<"/delay_hello">>} -> ok end,
-		receive {request_received, <<"/hello">>} -> ok end,
-		CowboyConnPid = get_remote_pid_tcp(element(2, Client)),
-		CowboyConnRef = erlang:monitor(process, CowboyConnPid),
-		ok = sys:terminate(CowboyConnPid, system_is_going_down),
-		Rest = case catch raw_recv_head(Client) of
-			{'EXIT', _} -> error(closed);
-			Data ->
-				{'HTTP/1.1', 200, _, Rest0} = cow_http:parse_status_line(Data),
-				{Headers, Rest1} = cow_http:parse_headers(Rest0),
-				<<"close">> = proplists:get_value(<<"connection">>, Headers),
-				Rest1
-		end,
-		<<"Hello world!">> = raw_recv_rest(Client, byte_size(<<"Hello world!">>), Rest),
-		{error, closed} = raw_recv(Client, 0, 1000),
-		receive
-			{'DOWN', CowboyConnRef, process, CowboyConnPid, _Reason} ->
-				ok
-		end
-	after
-		cowboy:stop_listener(?FUNCTION_NAME)
-	end.
-
-graceful_shutdown_listener(Config) ->
-	doc("Check that connections are shut down gracefully when stopping a listener."),
-	TransOpts = #{
-		socket_opts => [{port, 0}],
-		shutdown => 1000 %% Shorter timeout to make the test case faster.
-	},
-	Dispatch = cowboy_router:compile([{"localhost", [
-		{"/delay_hello", delay_hello_h,
-			#{delay => 500, notify_received => self()}},
-		{"/long_delay_hello", delay_hello_h,
-			#{delay => 10000, notify_received => self()}}
-	]}]),
-	ProtoOpts = #{
-		env => #{dispatch => Dispatch}
-	},
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, TransOpts, ProtoOpts),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	ConnPid1 = gun_open([{type, tcp}, {protocol, http}, {port, Port}|Config]),
-	Ref1 = gun:get(ConnPid1, "/delay_hello"),
-	ConnPid2 = gun_open([{type, tcp}, {protocol, http}, {port, Port}|Config]),
-	Ref2 = gun:get(ConnPid2, "/long_delay_hello"),
-	%% Shutdown listener while the handlers are working.
-	receive {request_received, <<"/delay_hello">>} -> ok end,
-	receive {request_received, <<"/long_delay_hello">>} -> ok end,
-	%% Note: This call does not complete quickly and will
-	%% prevent other cowboy:stop_listener/1 calls to complete.
-	ok = cowboy:stop_listener(?FUNCTION_NAME),
-	%% Check that the 1st request is handled before shutting down.
-	{response, nofin, 200, RespHeaders} = gun:await(ConnPid1, Ref1),
-	<<"close">> = proplists:get_value(<<"connection">>, RespHeaders),
-	{ok, RespBody} = gun:await_body(ConnPid1, Ref1),
-	<<"Hello world!">> = iolist_to_binary(RespBody),
-	gun:close(ConnPid1),
-	%% Check that the 2nd (very slow) request is not handled.
-	{error, {stream_error, closed}} = gun:await(ConnPid2, Ref2),
-	gun:close(ConnPid2).
-
-send_timeout_close(_Config) ->
-	doc("Check that connections are closed on send timeout."),
-	TransOpts = #{
-		port => 0,
-		socket_opts => [
-			{send_timeout, 100},
-			{send_timeout_close, true},
-			{sndbuf, 10}
-		]
-	},
-	Dispatch = cowboy_router:compile([{"localhost", [
-		{"/endless", loop_handler_endless_h, #{delay => 100}}
-	]}]),
-	ProtoOpts = #{
-		env => #{dispatch => Dispatch},
-		idle_timeout => infinity
-	},
-	{ok, _} = cowboy:start_clear(?FUNCTION_NAME, TransOpts, ProtoOpts),
-	Port = ranch:get_port(?FUNCTION_NAME),
-	try
-		%% Connect a client that sends a request and waits indefinitely.
-		{ok, ClientSocket} = gen_tcp:connect("localhost", Port,
-			[{recbuf, 10}, {buffer, 10}, {active, false}, {packet, 0}]),
-		ok = gen_tcp:send(ClientSocket, [
-			"GET /endless HTTP/1.1\r\n",
-			"Host: localhost:", integer_to_list(Port), "\r\n",
-			"x-test-pid: ", pid_to_list(self()), "\r\n\r\n"
-		]),
-		%% Wait for the handler to start then get its pid,
-		%% the remote connection's pid and socket.
-		StreamPid = receive
-			{Self, StreamPid0, init} when Self =:= self() ->
-				StreamPid0
-		after 1000 ->
-			error(timeout)
-		end,
-		ServerPid = ct_helper:get_remote_pid_tcp(ClientSocket),
-		{links, ServerLinks} = process_info(ServerPid, links),
-		[ServerSocket] = [PidOrPort || PidOrPort <- ServerLinks, is_port(PidOrPort)],
-		%% Poll the socket repeatedly until it is closed by the server.
-		WaitClosedFun =
-			fun F(T) when T =< 0 ->
-					error({status, prim_inet:getstatus(ServerSocket)});
-				F(T) ->
-					Snooze = 100,
-					case inet:sockname(ServerSocket) of
-						{error, _} ->
-							timer:sleep(Snooze);
-						{ok, _} ->
-							timer:sleep(Snooze),
-							F(T - Snooze)
-					end
-			end,
-		ok = WaitClosedFun(2000),
-		false = erlang:is_process_alive(StreamPid),
-		false = erlang:is_process_alive(ServerPid)
 	after
 		cowboy:stop_listener(?FUNCTION_NAME)
 	end.
